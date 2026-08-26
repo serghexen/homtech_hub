@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from hub import __version__
 from hub.config import Settings, load_settings
-from hub.domain import Purchase, PurchaseRequest, valid_request_id
+from hub.domain import Purchase, PurchaseRequest, PurchaseState, valid_request_id
 from hub.operator_service import OperatorDecision, OperatorService
 from hub.providers.base import ProviderError
 from hub.providers.interhub import InterHubProvider
@@ -24,6 +24,7 @@ from hub.repository import (
     OperatorActionConflict,
     PostgresPurchaseRepository,
     PurchaseNotAwaitingAttention,
+    ResultAccessConflict,
 )
 from hub.service import PurchaseService
 
@@ -86,21 +87,33 @@ class ObservabilitySummaryOut(BaseModel):
 class OperatorPurchaseOut(BaseModel):
     id: UUID
     consumer_id: str
+    idempotency_key: str
     request_id: str
     provider_code: str
     service_id: int
+    nominal_id: str
     max_amount: str | None
     provider_operation_id: str
     state: str
     amount: str | None
     provider_status: int | None
+    provider_message: str
     provider_transaction_id: str
+    result_available: bool
     status_check_attempts: int
     created_at: datetime | None
     updated_at: datetime | None
     pay_started_at: datetime | None
     completed_at: datetime | None
     last_error: str
+
+
+class OperatorPurchaseListOut(BaseModel):
+    items: list[OperatorPurchaseOut]
+    total: int
+    total_amount: str
+    limit: int
+    offset: int
 
 
 class OperatorResolutionIn(BaseModel):
@@ -121,6 +134,17 @@ class OperatorActionOut(BaseModel):
     decision: str
     reason: str
     created_at: datetime
+
+
+class OperatorResultAccessOut(BaseModel):
+    id: UUID
+    operator_id: str
+    request_id: str
+    created_at: datetime
+
+
+class OperatorPurchaseResultOut(PurchaseResultOut):
+    access_created: bool
 
 
 def normalize_request_id(value: str) -> str:
@@ -159,18 +183,23 @@ def purchase_out(purchase: Purchase) -> PurchaseOut:
 
 
 def operator_purchase_out(purchase: Purchase) -> OperatorPurchaseOut:
+    nominal_id = str(purchase.params.get("nominal") or purchase.params.get("nominal_id") or "")
     return OperatorPurchaseOut(
         id=purchase.id,
         consumer_id=purchase.consumer_id,
+        idempotency_key=purchase.idempotency_key,
         request_id=purchase.request_id,
         provider_code=purchase.provider_code,
         service_id=purchase.service_id,
+        nominal_id=nominal_id,
         max_amount=str(purchase.max_amount) if purchase.max_amount is not None else None,
         provider_operation_id=purchase.provider_operation_id,
         state=str(purchase.state),
         amount=str(purchase.amount) if purchase.amount is not None else None,
         provider_status=purchase.provider_status,
+        provider_message=purchase.provider_message,
         provider_transaction_id=purchase.provider_transaction_id,
+        result_available=purchase.result_available,
         status_check_attempts=purchase.status_check_attempts,
         created_at=purchase.created_at,
         updated_at=purchase.updated_at,
@@ -326,6 +355,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for purchase in repository.list_requires_attention(bounded_limit, bounded_offset)
         ]
 
+    @application.get("/v1/operator/transactions", response_model=OperatorPurchaseListOut)
+    def operator_transaction_history(
+        limit: int = 50,
+        offset: int = 0,
+        state: str = "",
+        provider_code: str = "",
+        consumer_id: str = "",
+        query: str = "",
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+        sort_by: Literal["created_at", "amount", "service_id", "nominal"] = "created_at",
+        sort_direction: Literal["asc", "desc"] = "desc",
+        _operator_id: str = Depends(authenticated_operator),
+    ) -> OperatorPurchaseListOut:
+        bounded_limit = max(1, min(limit, 100))
+        bounded_offset = max(0, offset)
+        clean_state = state.strip().lower()
+        if clean_state and clean_state not in {str(item) for item in PurchaseState}:
+            raise HTTPException(status_code=422, detail="Unknown purchase state")
+        clean_provider = provider_code.strip().lower()[:40]
+        clean_consumer = consumer_id.strip()[:120]
+        clean_query = query.strip()[:200]
+        if created_from and created_to and created_from >= created_to:
+            raise HTTPException(status_code=422, detail="created_from must be earlier than created_to")
+        items, total, total_amount = repository.list_purchases(
+            bounded_limit,
+            bounded_offset,
+            state=clean_state,
+            provider_code=clean_provider,
+            consumer_id=clean_consumer,
+            query=clean_query,
+            created_from=created_from,
+            created_to=created_to,
+            sort_by=sort_by,
+            sort_direction=sort_direction,
+        )
+        return OperatorPurchaseListOut(
+            items=[operator_purchase_out(item) for item in items],
+            total=total,
+            total_amount=str(total_amount),
+            limit=bounded_limit,
+            offset=bounded_offset,
+        )
+
     @application.get("/v1/operator/purchases/{purchase_id}", response_model=OperatorPurchaseOut)
     def operator_purchase_detail(
         purchase_id: UUID,
@@ -379,6 +452,65 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return [
             OperatorActionOut(**action)
             for action in repository.list_operator_actions(purchase_id)
+        ]
+
+    @application.get(
+        "/v1/operator/purchases/{purchase_id}/events",
+        response_model=list[PurchaseEventOut],
+    )
+    def operator_purchase_events(
+        purchase_id: UUID,
+        _operator_id: str = Depends(authenticated_operator),
+    ) -> list[PurchaseEventOut]:
+        if not repository.get(purchase_id):
+            raise HTTPException(status_code=404, detail="Purchase not found")
+        return [PurchaseEventOut(**event) for event in repository.list_events_for_operator(purchase_id)]
+
+    @application.post(
+        "/v1/operator/purchases/{purchase_id}/result",
+        response_model=OperatorPurchaseResultOut,
+    )
+    def operator_purchase_result(
+        purchase_id: UUID,
+        operator_id: str = Depends(authenticated_operator),
+        x_request_id: str = Header(default=""),
+    ) -> OperatorPurchaseResultOut:
+        if not repository.get(purchase_id):
+            raise HTTPException(status_code=404, detail="Purchase not found")
+        try:
+            value, created = repository.read_result_for_operator(
+                purchase_id,
+                operator_id,
+                required_request_id(x_request_id),
+                configured.data_secret,
+            )
+        except ResultAccessConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="Stored purchase result cannot be decrypted") from exc
+        if value is None:
+            raise HTTPException(status_code=409, detail="Purchase result is not available")
+        return OperatorPurchaseResultOut(
+            purchase_id=purchase_id,
+            value=value,
+            access_created=created,
+        )
+
+    @application.get(
+        "/v1/operator/purchases/{purchase_id}/result-accesses",
+        response_model=list[OperatorResultAccessOut],
+    )
+    def operator_purchase_result_accesses(
+        purchase_id: UUID,
+        _operator_id: str = Depends(authenticated_operator),
+    ) -> list[OperatorResultAccessOut]:
+        if not repository.get(purchase_id):
+            raise HTTPException(status_code=404, detail="Purchase not found")
+        return [
+            OperatorResultAccessOut(**event)
+            for event in repository.list_result_accesses(purchase_id)
         ]
 
     return application

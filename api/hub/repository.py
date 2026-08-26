@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 import json
 from typing import Any, Protocol
@@ -27,6 +27,10 @@ class OperatorActionConflict(ValueError):
 
 
 class PurchaseNotAwaitingAttention(RuntimeError):
+    pass
+
+
+class ResultAccessConflict(ValueError):
     pass
 
 
@@ -55,7 +59,30 @@ class PurchaseRepository(Protocol):
     def list_events(self, purchase_id: UUID, consumer_id: str) -> list[dict[str, Any]]: ...
     def observability_summary(self, consumer_id: str, stale_after_sec: int) -> dict[str, Any]: ...
     def list_requires_attention(self, limit: int, offset: int) -> list[Purchase]: ...
+    def list_purchases(
+        self,
+        limit: int,
+        offset: int,
+        *,
+        state: str = "",
+        provider_code: str = "",
+        consumer_id: str = "",
+        query: str = "",
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+        sort_by: str = "created_at",
+        sort_direction: str = "desc",
+    ) -> tuple[list[Purchase], int, Decimal]: ...
     def list_operator_actions(self, purchase_id: UUID) -> list[dict[str, Any]]: ...
+    def list_events_for_operator(self, purchase_id: UUID) -> list[dict[str, Any]]: ...
+    def read_result_for_operator(
+        self,
+        purchase_id: UUID,
+        operator_id: str,
+        request_id: str,
+        data_secret: str,
+    ) -> tuple[str | None, bool]: ...
+    def list_result_accesses(self, purchase_id: UUID) -> list[dict[str, Any]]: ...
     def resolve_attention(
         self,
         purchase_id: UUID,
@@ -205,6 +232,88 @@ class PostgresPurchaseRepository:
                 rows = cursor.fetchall()
             connection.commit()
         return [_purchase(row) for row in rows]
+
+    def list_purchases(
+        self,
+        limit: int,
+        offset: int,
+        *,
+        state: str = "",
+        provider_code: str = "",
+        consumer_id: str = "",
+        query: str = "",
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+        sort_by: str = "created_at",
+        sort_direction: str = "desc",
+    ) -> tuple[list[Purchase], int, Decimal]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if state:
+            clauses.append("state=%s")
+            values.append(state)
+        if provider_code:
+            clauses.append("provider_code=%s")
+            values.append(provider_code)
+        if consumer_id:
+            clauses.append("consumer_id=%s")
+            values.append(consumer_id)
+        if created_from is not None:
+            clauses.append("created_at >= %s")
+            values.append(created_from)
+        if created_to is not None:
+            clauses.append("created_at < %s")
+            values.append(created_to)
+        if query:
+            clauses.append(
+                "("
+                "id::text ILIKE %s OR consumer_id ILIKE %s OR request_id ILIKE %s "
+                "OR provider_operation_id ILIKE %s OR provider_transaction_id ILIKE %s "
+                "OR service_id::text ILIKE %s OR COALESCE(request_params->>'nominal', '') ILIKE %s"
+                ")"
+            )
+            pattern = f"%{query}%"
+            values.extend([pattern] * 7)
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sort_columns = {
+            "created_at": "created_at",
+            "amount": "amount",
+            "service_id": "service_id",
+            "nominal": "COALESCE(request_params->>'nominal', '')",
+        }
+        order_column = sort_columns.get(sort_by, "created_at")
+        order_direction = "ASC" if sort_direction == "asc" else "DESC"
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT count(*)::bigint AS total,
+                           COALESCE(sum(amount) FILTER (WHERE state='succeeded'), 0)::numeric(18, 6)
+                               AS total_amount
+                    FROM supplier_hub.purchases
+                    {where_sql}
+                    """,
+                    tuple(values),
+                )
+                total_row = cursor.fetchone() or {}
+                cursor.execute(
+                    f"""
+                    SELECT *
+                    FROM supplier_hub.purchases
+                    {where_sql}
+                    ORDER BY {order_column} {order_direction} NULLS LAST,
+                             created_at DESC, id DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (*values, limit, offset),
+                )
+                rows = cursor.fetchall()
+            connection.commit()
+        return (
+            [_purchase(row) for row in rows],
+            int(total_row.get("total") or 0),
+            Decimal(str(total_row.get("total_amount") or 0)),
+        )
 
     def list_operator_actions(self, purchase_id: UUID) -> list[dict[str, Any]]:
         with self._connect() as connection:
@@ -360,6 +469,89 @@ class PostgresPurchaseRepository:
                     ORDER BY event.id
                     """,
                     (purchase_id, consumer_id),
+                )
+                rows = cursor.fetchall()
+            connection.commit()
+        return [dict(row) for row in rows]
+
+    def list_events_for_operator(self, purchase_id: UUID) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, request_id, event_type, from_state, to_state, created_at
+                    FROM supplier_hub.purchase_events
+                    WHERE purchase_id=%s
+                    ORDER BY id
+                    """,
+                    (purchase_id,),
+                )
+                rows = cursor.fetchall()
+            connection.commit()
+        return [dict(row) for row in rows]
+
+    def read_result_for_operator(
+        self,
+        purchase_id: UUID,
+        operator_id: str,
+        request_id: str,
+        data_secret: str,
+    ) -> tuple[str | None, bool]:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT pgp_sym_decrypt(result_ciphertext, %s) AS value
+                    FROM supplier_hub.purchases
+                    WHERE id=%s AND state='succeeded' AND result_ciphertext IS NOT NULL
+                    FOR SHARE
+                    """,
+                    (data_secret, purchase_id),
+                )
+                result = cursor.fetchone()
+                if not result:
+                    return None, False
+                cursor.execute(
+                    """
+                    INSERT INTO supplier_hub.result_access_events(
+                        id, purchase_id, operator_id, request_id
+                    ) VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (operator_id, request_id) DO NOTHING
+                    RETURNING purchase_id
+                    """,
+                    (uuid4(), purchase_id, operator_id, request_id),
+                )
+                inserted = cursor.fetchone()
+                created = inserted is not None
+                if not created:
+                    # После конкурентного повтора проверяем, что request id относится к той же покупке.
+                    cursor.execute(
+                        """
+                        SELECT purchase_id
+                        FROM supplier_hub.result_access_events
+                        WHERE operator_id=%s AND request_id=%s
+                        """,
+                        (operator_id, request_id),
+                    )
+                    existing = cursor.fetchone()
+                    if not existing or existing["purchase_id"] != purchase_id:
+                        raise ResultAccessConflict(
+                            "Operator request id is already used for another purchase result"
+                        )
+            connection.commit()
+        return str(result["value"]), created
+
+    def list_result_accesses(self, purchase_id: UUID) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, operator_id, request_id, created_at
+                    FROM supplier_hub.result_access_events
+                    WHERE purchase_id=%s
+                    ORDER BY created_at, id
+                    """,
+                    (purchase_id,),
                 )
                 rows = cursor.fetchall()
             connection.commit()

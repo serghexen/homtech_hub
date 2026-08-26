@@ -31,6 +31,17 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("UNIQUE (operator_id, request_id)", migration)
         self.assertIn("WHERE state='requires_attention'", migration)
 
+    def test_operator_result_reads_have_a_separate_audit_log(self):
+        root = Path(__file__).resolve().parents[1]
+        migration = (root / "migrations" / "20260826_05_operator_history.sql").read_text(
+            encoding="utf-8"
+        )
+        repository = (root / "api" / "hub" / "repository.py").read_text(encoding="utf-8")
+        self.assertIn("supplier_hub.result_access_events", migration)
+        self.assertIn("UNIQUE (operator_id, request_id)", migration)
+        self.assertNotIn("result_value", migration)
+        self.assertIn("sum(amount) FILTER (WHERE state='succeeded')", repository)
+
     def test_purchase_amount_guard_is_persisted_and_checked_before_pay(self):
         root = Path(__file__).resolve().parents[1]
         migration = (root / "migrations" / "20260826_04_purchase_amount_guard.sql").read_text(
