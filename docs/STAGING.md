@@ -52,7 +52,11 @@ Hub только `services` и `balance`. Она выводит количест
 sudo docker exec homtech-hub-staging-api-1 python api/scripts/staging_smoke_test.py
 ```
 
-Тест проверяет API-аутентификацию, идемпотентность, конфликт параметров, PostgreSQL lease/state transitions и pgcrypto. Он отказывается работать при разрешённых live-покупках и удаляет только созданную им запись в `finally`.
+Тест проверяет API-аутентификацию, идемпотентность, сохранение исходного
+`request_id`, безопасную историю событий, observability summary, PostgreSQL
+lease/state transitions и pgcrypto. Он отказывается работать при разрешённых
+live-покупках, не вызывает InterHub и удаляет созданную им запись и события в
+`finally`.
 
 ## Ограничения эксплуатации
 

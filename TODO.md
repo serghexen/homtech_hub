@@ -10,7 +10,7 @@
 - [x] Проверить применение миграций на чистой PostgreSQL и выполнить staging smoke-тест state machine/pgcrypto.
 - [ ] Превратить staging smoke-тест в автоматически запускаемый CI integration test.
 - [x] Снять обезличенные fixtures реальных ответов InterHub из CRM и добавить contract-тесты.
-- [ ] Добавить структурированный audit/request ID и метрики зависших операций.
+- [x] Добавить структурированный audit/request ID и метрики зависших операций.
 - [ ] Добавить операторский endpoint сверки `requires_attention`, не выполняющий повторный `pay`.
 - [ ] Настроить CI: unit tests, migration test и Docker build.
 
