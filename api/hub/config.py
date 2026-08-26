@@ -31,6 +31,7 @@ class Settings:
     worker_poll_sec: int
     lease_sec: int
     max_status_checks: int
+    stale_after_sec: int
     interhub_api_url: str
     interhub_token: str
     interhub_timeout_sec: int
@@ -86,6 +87,7 @@ def load_settings() -> Settings:
         worker_poll_sec=env_int("SUPPLIER_HUB_WORKER_POLL_SEC", 5, 1, 300),
         lease_sec=env_int("SUPPLIER_HUB_LEASE_SEC", 60, 15, 900),
         max_status_checks=env_int("SUPPLIER_HUB_MAX_STATUS_CHECKS", 120, 1, 10_000),
+        stale_after_sec=env_int("SUPPLIER_HUB_STALE_AFTER_SEC", 900, 60, 86_400),
         interhub_api_url=os.getenv("INTERHUB_API_URL", "https://api.interhub.ae").strip(),
         interhub_token=os.getenv("INTERHUB_TOKEN", "").strip(),
         interhub_timeout_sec=env_int("INTERHUB_TIMEOUT_SEC", 20, 5, 120),

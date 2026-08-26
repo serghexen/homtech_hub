@@ -9,7 +9,7 @@ from uuid import UUID
 
 from hub.config import Settings
 from hub.crypto import value_hash
-from hub.domain import Purchase, PurchaseRequest, PurchaseState
+from hub.domain import Purchase, PurchaseRequest, PurchaseState, valid_request_id
 from hub.providers.base import ProviderError, ProviderResult, ProviderState, SupplierProvider
 from hub.repository import DuplicateSupplierResult, PurchaseRepository
 
@@ -43,6 +43,8 @@ class PurchaseService:
             raise ValueError("service_id must be positive")
         if not request.idempotency_key.strip() or len(request.idempotency_key) > 200:
             raise ValueError("idempotency_key must contain 1 to 200 characters")
+        if not valid_request_id(request.request_id):
+            raise ValueError("request_id must contain 1 to 128 safe characters")
         return self.repository.create_or_get(request, request_fingerprint(request))
 
     def process_claimed(self, purchase: Purchase, lease_token: UUID) -> Purchase:

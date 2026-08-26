@@ -25,12 +25,15 @@ def request_json(
     *,
     client_id: str = "",
     client_key: str = "",
+    request_id: str = "",
     payload: dict[str, Any] | None = None,
-) -> tuple[int, dict[str, Any]]:
+) -> tuple[int, Any]:
     headers = {"Accept": "application/json"}
     if client_id:
         headers["X-Hub-Client"] = client_id
         headers["X-Hub-Key"] = client_key
+    if request_id:
+        headers["X-Request-ID"] = request_id
     body = None
     if payload is not None:
         headers["Content-Type"] = "application/json"
@@ -58,6 +61,7 @@ def main() -> None:
         raise AssertionError(f"unauthorized request returned {status}, expected 401")
 
     idempotency_key = f"staging-smoke:{uuid4()}"
+    request_id = f"staging-smoke:{uuid4()}"
     payload = {
         "idempotency_key": idempotency_key,
         "provider_code": "interhub",
@@ -71,20 +75,44 @@ def main() -> None:
             "/v1/purchases",
             client_id=client_id,
             client_key=client_key,
+            request_id=request_id,
             payload=payload,
         )
-        if status != 202 or created.get("state") != "created":
+        if status != 202 or created.get("state") != "created" or created.get("request_id") != request_id:
             raise AssertionError(f"create returned {status}: {created}")
         purchase_id = UUID(str(created["id"]))
+
+        status, events = request_json(
+            base_url,
+            f"/v1/purchases/{purchase_id}/events",
+            client_id=client_id,
+            client_key=client_key,
+        )
+        if status != 200 or len(events) != 1 or events[0].get("request_id") != request_id:
+            raise AssertionError("created audit event is missing request correlation")
+
+        status, summary = request_json(
+            base_url,
+            "/v1/observability/summary",
+            client_id=client_id,
+            client_key=client_key,
+        )
+        if status != 200 or int(summary.get("in_flight", 0)) < 1:
+            raise AssertionError("observability summary did not include the synthetic in-flight row")
 
         status, repeated = request_json(
             base_url,
             "/v1/purchases",
             client_id=client_id,
             client_key=client_key,
+            request_id=f"retry:{uuid4()}",
             payload=payload,
         )
-        if status != 202 or repeated.get("id") != str(purchase_id):
+        if (
+            status != 202
+            or repeated.get("id") != str(purchase_id)
+            or repeated.get("request_id") != request_id
+        ):
             raise AssertionError("identical idempotent request did not return the original purchase")
 
         conflicting = {**payload, "service_id": 2}
@@ -93,6 +121,7 @@ def main() -> None:
             "/v1/purchases",
             client_id=client_id,
             client_key=client_key,
+            request_id=request_id,
             payload=conflicting,
         )
         if status != 409:

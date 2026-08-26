@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from hmac import compare_digest
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import psycopg
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from hub import __version__
 from hub.config import Settings, load_settings
-from hub.domain import Purchase, PurchaseRequest
+from hub.domain import Purchase, PurchaseRequest, valid_request_id
 from hub.providers.base import ProviderError
 from hub.providers.interhub import InterHubProvider
 from hub.repository import IdempotencyConflict, PostgresPurchaseRepository
@@ -31,6 +32,7 @@ class PurchaseIn(BaseModel):
 class PurchaseOut(BaseModel):
     id: UUID
     idempotency_key: str
+    request_id: str
     provider_code: str
     service_id: int
     state: str
@@ -47,10 +49,46 @@ class PurchaseResultOut(BaseModel):
     value: str
 
 
+class PurchaseEventOut(BaseModel):
+    id: int
+    request_id: str
+    event_type: str
+    from_state: str | None
+    to_state: str | None
+    created_at: datetime
+
+
+class ObservabilitySummaryOut(BaseModel):
+    total: int
+    created: int
+    checked: int
+    payment_started: int
+    processing: int
+    succeeded: int
+    failed: int
+    requires_attention: int
+    in_flight: int
+    stale_in_flight: int
+    oldest_in_flight_age_sec: int
+    stale_after_sec: int
+
+
+def normalize_request_id(value: str) -> str:
+    request_id = value.strip()
+    if not request_id:
+        return str(uuid4())
+    if request_id != value:
+        raise ValueError("X-Request-ID must not contain surrounding whitespace")
+    if not valid_request_id(request_id):
+        raise ValueError("X-Request-ID must contain 1 to 128 safe characters")
+    return request_id
+
+
 def purchase_out(purchase: Purchase) -> PurchaseOut:
     return PurchaseOut(
         id=purchase.id,
         idempotency_key=purchase.idempotency_key,
+        request_id=purchase.request_id,
         provider_code=purchase.provider_code,
         service_id=purchase.service_id,
         state=str(purchase.state),
@@ -119,12 +157,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @application.post("/v1/purchases", response_model=PurchaseOut, status_code=202)
-    def create_purchase(payload: PurchaseIn, client_id: str = Depends(authenticated_client)) -> PurchaseOut:
+    def create_purchase(
+        payload: PurchaseIn,
+        response: Response,
+        client_id: str = Depends(authenticated_client),
+        x_request_id: str = Header(default=""),
+    ) -> PurchaseOut:
         try:
+            request_id = normalize_request_id(x_request_id)
             purchase, _created = service.enqueue(
                 PurchaseRequest(
                     consumer_id=client_id,
                     idempotency_key=payload.idempotency_key.strip(),
+                    request_id=request_id,
                     provider_code=payload.provider_code.strip().lower(),
                     service_id=payload.service_id,
                     account=payload.account,
@@ -135,6 +180,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        response.headers["X-Request-ID"] = purchase.request_id
         return purchase_out(purchase)
 
     @application.get("/v1/purchases/{purchase_id}", response_model=PurchaseOut)
@@ -143,6 +189,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not purchase:
             raise HTTPException(status_code=404, detail="Purchase not found")
         return purchase_out(purchase)
+
+    @application.get("/v1/purchases/{purchase_id}/events", response_model=list[PurchaseEventOut])
+    def read_purchase_events(
+        purchase_id: UUID,
+        client_id: str = Depends(authenticated_client),
+    ) -> list[PurchaseEventOut]:
+        if not repository.get(purchase_id, client_id):
+            raise HTTPException(status_code=404, detail="Purchase not found")
+        return [PurchaseEventOut(**event) for event in repository.list_events(purchase_id, client_id)]
+
+    @application.get("/v1/observability/summary", response_model=ObservabilitySummaryOut)
+    def observability_summary(client_id: str = Depends(authenticated_client)) -> ObservabilitySummaryOut:
+        values = repository.observability_summary(client_id, configured.stale_after_sec)
+        return ObservabilitySummaryOut(**values, stale_after_sec=configured.stale_after_sec)
 
     @application.get("/v1/purchases/{purchase_id}/result", response_model=PurchaseResultOut)
     def read_purchase_result(

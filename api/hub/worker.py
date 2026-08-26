@@ -50,14 +50,20 @@ def main() -> None:
         try:
             result = service.process_claimed(purchase, lease_token)
             LOGGER.info(
-                "purchase processed id=%s provider=%s state=%s",
+                "purchase processed id=%s request_id=%s provider=%s state=%s",
                 result.id,
+                result.request_id,
                 result.provider_code,
                 result.state,
             )
         except Exception:
             # The DB lease expires and the durable state is safely claimed again. Never log request params or secrets.
-            LOGGER.exception("purchase processing failed id=%s state=%s", purchase.id, purchase.state)
+            LOGGER.exception(
+                "purchase processing failed id=%s request_id=%s state=%s",
+                purchase.id,
+                purchase.request_id,
+                purchase.state,
+            )
 
 
 if __name__ == "__main__":

@@ -44,6 +44,8 @@ class PurchaseRepository(Protocol):
     ) -> Purchase: ...
     def mark_requires_attention(self, purchase_id: UUID, lease_token: UUID, message: str) -> Purchase: ...
     def read_result(self, purchase_id: UUID, consumer_id: str, data_secret: str) -> str | None: ...
+    def list_events(self, purchase_id: UUID, consumer_id: str) -> list[dict[str, Any]]: ...
+    def observability_summary(self, consumer_id: str, stale_after_sec: int) -> dict[str, Any]: ...
 
 
 def _purchase(row: dict[str, Any]) -> Purchase:
@@ -54,6 +56,7 @@ def _purchase(row: dict[str, Any]) -> Purchase:
         id=row["id"],
         consumer_id=str(row["consumer_id"]),
         idempotency_key=str(row["idempotency_key"]),
+        request_id=str(row.get("request_id") or row["id"]),
         provider_code=str(row["provider_code"]),
         service_id=int(row["service_id"]),
         account=str(row.get("account") or ""),
@@ -79,13 +82,17 @@ class PostgresPurchaseRepository:
         return psycopg.connect(self.database_url, row_factory=dict_row)
 
     @staticmethod
-    def _event(cursor, purchase_id: UUID, event_type: str, old: str | None, new: str | None, message: str = "") -> None:
+    def _event(cursor, purchase_id: UUID, event_type: str, old: str | None, new: str | None) -> None:
         cursor.execute(
             """
-            INSERT INTO supplier_hub.purchase_events(purchase_id, event_type, from_state, to_state, message)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO supplier_hub.purchase_events(
+                purchase_id, request_id, event_type, from_state, to_state, message
+            )
+            SELECT id, request_id, %s, %s, %s, ''
+            FROM supplier_hub.purchases
+            WHERE id=%s
             """,
-            (purchase_id, event_type, old, new, message[:2000]),
+            (event_type, old, new, purchase_id),
         )
 
     def create_or_get(self, request: PurchaseRequest, fingerprint: str) -> tuple[Purchase, bool]:
@@ -96,9 +103,9 @@ class PostgresPurchaseRepository:
                 cursor.execute(
                     """
                     INSERT INTO supplier_hub.purchases(
-                        id, consumer_id, idempotency_key, request_fingerprint, provider_code,
+                        id, consumer_id, idempotency_key, request_id, request_fingerprint, provider_code,
                         service_id, account, request_params, provider_operation_id
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
                     ON CONFLICT (consumer_id, idempotency_key) DO NOTHING
                     RETURNING *
                     """,
@@ -106,6 +113,7 @@ class PostgresPurchaseRepository:
                         purchase_id,
                         request.consumer_id,
                         request.idempotency_key,
+                        request.request_id,
                         fingerprint,
                         request.provider_code,
                         request.service_id,
@@ -144,6 +152,73 @@ class PostgresPurchaseRepository:
                 row = cursor.fetchone()
             connection.commit()
         return _purchase(row) if row else None
+
+    def list_events(self, purchase_id: UUID, consumer_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT event.id, event.request_id, event.event_type,
+                           event.from_state, event.to_state, event.created_at
+                    FROM supplier_hub.purchase_events AS event
+                    JOIN supplier_hub.purchases AS purchase ON purchase.id=event.purchase_id
+                    WHERE event.purchase_id=%s AND purchase.consumer_id=%s
+                    ORDER BY event.id
+                    """,
+                    (purchase_id, consumer_id),
+                )
+                rows = cursor.fetchall()
+            connection.commit()
+        return [dict(row) for row in rows]
+
+    def observability_summary(self, consumer_id: str, stale_after_sec: int) -> dict[str, Any]:
+        active_states = [
+            str(PurchaseState.CREATED),
+            str(PurchaseState.CHECKED),
+            str(PurchaseState.PAYMENT_STARTED),
+            str(PurchaseState.PROCESSING),
+        ]
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        count(*)::bigint AS total,
+                        count(*) FILTER (WHERE state='created')::bigint AS created,
+                        count(*) FILTER (WHERE state='checked')::bigint AS checked,
+                        count(*) FILTER (WHERE state='payment_started')::bigint AS payment_started,
+                        count(*) FILTER (WHERE state='processing')::bigint AS processing,
+                        count(*) FILTER (WHERE state='succeeded')::bigint AS succeeded,
+                        count(*) FILTER (WHERE state='failed')::bigint AS failed,
+                        count(*) FILTER (WHERE state='requires_attention')::bigint AS requires_attention,
+                        count(*) FILTER (WHERE state = ANY(%s))::bigint AS in_flight,
+                        count(*) FILTER (
+                            WHERE (
+                                state IN ('created', 'checked')
+                                AND next_attempt_at < now() - %s::interval
+                            ) OR (
+                                state IN ('payment_started', 'processing')
+                                AND COALESCE(pay_started_at, created_at) < now() - %s::interval
+                            )
+                        )::bigint AS stale_in_flight,
+                        COALESCE(
+                            extract(epoch FROM (now() - min(created_at) FILTER (WHERE state = ANY(%s))))::bigint,
+                            0
+                        ) AS oldest_in_flight_age_sec
+                    FROM supplier_hub.purchases
+                    WHERE consumer_id=%s
+                    """,
+                    (
+                        active_states,
+                        timedelta(seconds=stale_after_sec),
+                        timedelta(seconds=stale_after_sec),
+                        active_states,
+                        consumer_id,
+                    ),
+                )
+                row = cursor.fetchone() or {}
+            connection.commit()
+        return {key: int(value or 0) for key, value in row.items()}
 
     def read_result(self, purchase_id: UUID, consumer_id: str, data_secret: str) -> str | None:
         with self._connect() as connection:
@@ -227,7 +302,7 @@ class PostgresPurchaseRepository:
                     (str(target), message[:2000], *values, purchase_id, lease_token),
                 )
                 row = cursor.fetchone()
-                self._event(cursor, purchase_id, "state_changed", old, str(target), message)
+                self._event(cursor, purchase_id, "state_changed", old, str(target))
             connection.commit()
         if not row:
             raise RuntimeError("Purchase transition failed")

@@ -5,8 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
+import re
 from typing import Any
 from uuid import UUID
+
+
+REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+
+
+def valid_request_id(value: str) -> bool:
+    return bool(REQUEST_ID_PATTERN.fullmatch(value))
 
 
 class PurchaseState(StrEnum):
@@ -31,6 +39,7 @@ BLOCKS_FALLBACK = {
 class PurchaseRequest:
     consumer_id: str
     idempotency_key: str
+    request_id: str
     provider_code: str
     service_id: int
     account: str = ""
@@ -42,6 +51,7 @@ class Purchase:
     id: UUID
     consumer_id: str
     idempotency_key: str
+    request_id: str
     provider_code: str
     service_id: int
     account: str
