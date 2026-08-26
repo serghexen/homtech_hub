@@ -20,6 +20,8 @@ The first InterHub adapter preserves the safety properties found in the working 
 8. A stable consumer idempotency key returns the original operation.
 9. Reusing the same key with different arguments is rejected.
 10. A result hash prevents the same supplier code from being accepted twice.
+11. The consumer approves `max_amount` in the idempotent request. A higher
+    calculated provider price fails preflight before `check` and `pay`.
 
 ## Operator reconciliation
 

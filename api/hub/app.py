@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from hmac import compare_digest
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -31,6 +32,7 @@ class PurchaseIn(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
     provider_code: str = Field(default="interhub", min_length=1, max_length=40)
     service_id: int = Field(gt=0)
+    max_amount: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
     account: str = Field(default="", max_length=500)
     params: dict[str, Any] = Field(default_factory=dict)
     quantity: int = Field(default=1, ge=1, le=1)
@@ -42,6 +44,7 @@ class PurchaseOut(BaseModel):
     request_id: str
     provider_code: str
     service_id: int
+    max_amount: str | None
     state: str
     amount: str | None
     provider_status: int | None
@@ -86,6 +89,7 @@ class OperatorPurchaseOut(BaseModel):
     request_id: str
     provider_code: str
     service_id: int
+    max_amount: str | None
     provider_operation_id: str
     state: str
     amount: str | None
@@ -143,6 +147,7 @@ def purchase_out(purchase: Purchase) -> PurchaseOut:
         request_id=purchase.request_id,
         provider_code=purchase.provider_code,
         service_id=purchase.service_id,
+        max_amount=str(purchase.max_amount) if purchase.max_amount is not None else None,
         state=str(purchase.state),
         amount=str(purchase.amount) if purchase.amount is not None else None,
         provider_status=purchase.provider_status,
@@ -160,6 +165,7 @@ def operator_purchase_out(purchase: Purchase) -> OperatorPurchaseOut:
         request_id=purchase.request_id,
         provider_code=purchase.provider_code,
         service_id=purchase.service_id,
+        max_amount=str(purchase.max_amount) if purchase.max_amount is not None else None,
         provider_operation_id=purchase.provider_operation_id,
         state=str(purchase.state),
         amount=str(purchase.amount) if purchase.amount is not None else None,
@@ -256,6 +262,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     request_id=request_id,
                     provider_code=payload.provider_code.strip().lower(),
                     service_id=payload.service_id,
+                    max_amount=payload.max_amount,
                     account=payload.account,
                     params=payload.params,
                 )

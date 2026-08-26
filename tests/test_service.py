@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 import unittest
 from uuid import uuid4
 
@@ -21,6 +22,7 @@ class PurchaseServiceTests(unittest.TestCase):
             request_id="request-1",
             provider_code="interhub",
             service_id=100,
+            max_amount=Decimal("20.00"),
             params={"nominal": "10"},
         )
 
@@ -103,6 +105,14 @@ class PurchaseServiceTests(unittest.TestCase):
         purchase = self.service.process_claimed(purchase, uuid4())
         self.assertEqual(purchase.state, PurchaseState.FAILED)
         self.assertFalse(purchase.blocks_fallback)
+        self.assertEqual(self.provider.pay_calls, 0)
+
+    def test_price_above_approved_maximum_stops_before_pay(self):
+        limited = PurchaseRequest(**{**self.request.__dict__, "max_amount": Decimal("10.00")})
+        purchase, _ = self.service.enqueue(limited)
+        purchase = self.service.process_claimed(purchase, uuid4())
+        self.assertEqual(purchase.state, PurchaseState.FAILED)
+        self.assertIn("exceeds approved maximum", purchase.provider_message)
         self.assertEqual(self.provider.pay_calls, 0)
 
     def test_duplicate_supplier_code_requires_manual_reconciliation(self):

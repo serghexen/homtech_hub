@@ -18,6 +18,7 @@ def request_fingerprint(request: PurchaseRequest) -> str:
     payload = {
         "provider_code": request.provider_code,
         "service_id": request.service_id,
+        "max_amount": str(request.max_amount),
         "account": request.account,
         "params": request.params,
     }
@@ -41,6 +42,8 @@ class PurchaseService:
             raise ValueError(f"Unknown provider: {request.provider_code}")
         if request.service_id <= 0:
             raise ValueError("service_id must be positive")
+        if request.max_amount <= 0:
+            raise ValueError("max_amount must be positive")
         if not request.idempotency_key.strip() or len(request.idempotency_key) > 200:
             raise ValueError("idempotency_key must contain 1 to 200 characters")
         if not valid_request_id(request.request_id):
@@ -84,6 +87,18 @@ class PurchaseService:
                     purchase.id,
                     lease_token,
                     calculated.message or "Provider did not return a valid amount",
+                )
+            if purchase.max_amount is None or purchase.max_amount <= 0:
+                return self.repository.mark_preflight_failed(
+                    purchase.id,
+                    lease_token,
+                    "Purchase does not have a valid maximum amount",
+                )
+            if amount > purchase.max_amount:
+                return self.repository.mark_preflight_failed(
+                    purchase.id,
+                    lease_token,
+                    f"Provider amount {amount} exceeds approved maximum {purchase.max_amount}",
                 )
             checked = provider.check(
                 self._provider_request(

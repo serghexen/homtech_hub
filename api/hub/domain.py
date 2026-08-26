@@ -43,6 +43,7 @@ class PurchaseRequest:
     request_id: str
     provider_code: str
     service_id: int
+    max_amount: Decimal
     account: str = ""
     params: dict[str, Any] = field(default_factory=dict)
 
@@ -55,6 +56,7 @@ class Purchase:
     request_id: str
     provider_code: str
     service_id: int
+    max_amount: Decimal | None
     account: str
     params: dict[str, Any]
     request_fingerprint: str

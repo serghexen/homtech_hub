@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 import json
 import sys
 from typing import Any
@@ -61,6 +62,7 @@ def synthetic_attention(repository: PostgresPurchaseRepository, label: str) -> U
         request_id=f"operator-smoke:{uuid4()}",
         provider_code="interhub",
         service_id=1,
+        max_amount=Decimal("1.00"),
         params={"synthetic_operator_smoke": True},
     )
     purchase, _ = repository.create_or_get(request, request_fingerprint(request))

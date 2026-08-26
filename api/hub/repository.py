@@ -81,6 +81,7 @@ def _purchase(row: dict[str, Any]) -> Purchase:
         request_id=str(row.get("request_id") or row["id"]),
         provider_code=str(row["provider_code"]),
         service_id=int(row["service_id"]),
+        max_amount=Decimal(str(row["max_amount"])) if row.get("max_amount") is not None else None,
         account=str(row.get("account") or ""),
         params=params if isinstance(params, dict) else {},
         request_fingerprint=str(row["request_fingerprint"]),
@@ -138,8 +139,8 @@ class PostgresPurchaseRepository:
                     """
                     INSERT INTO supplier_hub.purchases(
                         id, consumer_id, idempotency_key, request_id, request_fingerprint, provider_code,
-                        service_id, account, request_params, provider_operation_id
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                        service_id, max_amount, account, request_params, provider_operation_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
                     ON CONFLICT (consumer_id, idempotency_key) DO NOTHING
                     RETURNING *
                     """,
@@ -151,6 +152,7 @@ class PostgresPurchaseRepository:
                         fingerprint,
                         request.provider_code,
                         request.service_id,
+                        request.max_amount,
                         request.account,
                         json.dumps(request.params),
                         provider_operation_id,

@@ -66,6 +66,7 @@ def main() -> None:
         "idempotency_key": idempotency_key,
         "provider_code": "interhub",
         "service_id": 1,
+        "max_amount": "1.00",
         "params": {"smoke_test": True},
     }
     purchase_id: UUID | None = None
