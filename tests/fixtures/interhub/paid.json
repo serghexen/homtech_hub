@@ -1,0 +1,8 @@
+{
+  "params": {
+    "gift_code": "[REDACTED]"
+  },
+  "status": 0,
+  "message": "Sample provider message",
+  "success": true
+}

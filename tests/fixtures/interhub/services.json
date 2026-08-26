@@ -1,0 +1,43 @@
+[
+  {
+    "id": 1001,
+    "name": "sample_field",
+    "category_name": "Sample category",
+    "type": "TEXT",
+    "min_amount": 100,
+    "max_amount": 100,
+    "fields": [
+      {
+        "id": 1001,
+        "name": "sample_field",
+        "type": "TEXT",
+        "required": true,
+        "service_id": 1001,
+        "parent_id": 1001,
+        "description": "sample-value",
+        "value_list": [
+          {
+            "id": 1001,
+            "title": "Sample service",
+            "condition": "sample-value",
+            "active": true,
+            "field_id": 1001,
+            "parent_id": 1001,
+            "order": 1,
+            "rrp": "sample-value"
+          }
+        ]
+      },
+      {
+        "id": 1001,
+        "name": "sample_field_optional",
+        "type": "TEXT",
+        "required": false,
+        "service_id": 1001,
+        "parent_id": 1001,
+        "description": "sample-value",
+        "value_list": []
+      }
+    ]
+  }
+]

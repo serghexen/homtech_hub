@@ -1,0 +1,12 @@
+{
+  "amount": 100,
+  "fields": [],
+  "status": 0,
+  "account": "[REDACTED]",
+  "message": "Sample provider message",
+  "success": true,
+  "currency": "RUB",
+  "comission": 100,
+  "transaction_id": "[REDACTED]",
+  "amount_in_currency": 100
+}
