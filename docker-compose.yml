@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - supplier_hub_postgres:/var/lib/postgresql/data
+    mem_limit: 512m
+    cpus: 0.50
+    restart: unless-stopped
+
+  migrate:
+    build: .
+    env_file: ${SUPPLIER_HUB_ENV_FILE:-.env}
+    command: ["python", "api/scripts/run_migrations.py"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    env_file: ${SUPPLIER_HUB_ENV_FILE:-.env}
+    command: ["uvicorn", "hub.app:app", "--host", "0.0.0.0", "--port", "8010"]
+    ports:
+      - "${SUPPLIER_HUB_BIND:-127.0.0.1:8010}:8010"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.50
+
+  worker:
+    build: .
+    env_file: ${SUPPLIER_HUB_ENV_FILE:-.env}
+    command: ["python", "-m", "hub.worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.50
+
+volumes:
+  supplier_hub_postgres:
