@@ -23,6 +23,7 @@ def main() -> None:
     database_password = token()
     seller_key = token()
     crm_key = token()
+    operator_key = token()
     data_secret = token()
     lines = [
         f"SUPPLIER_HUB_ENV_FILE={output.name}",
@@ -32,6 +33,7 @@ def main() -> None:
         f"POSTGRES_PASSWORD={database_password}",
         f"DATABASE_URL=postgresql://supplier_hub:{database_password}@postgres:5432/supplier_hub",
         f'SUPPLIER_HUB_CLIENTS_JSON={{"seller":"{seller_key}","crm":"{crm_key}"}}',
+        f'SUPPLIER_HUB_OPERATORS_JSON={{"operator":"{operator_key}"}}',
         f"SUPPLIER_HUB_DATA_SECRET={data_secret}",
         "SUPPLIER_HUB_PURCHASES_ENABLED=false",
         "SUPPLIER_HUB_WORKER_POLL_SEC=5",

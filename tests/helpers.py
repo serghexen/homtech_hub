@@ -14,6 +14,7 @@ def settings(**overrides) -> Settings:
     base = Settings(
         database_url="postgresql://unused",
         clients={"seller": "s" * 32},
+        operators={"operator": "o" * 32},
         data_secret="d" * 32,
         purchases_enabled=False,
         worker_poll_sec=1,
@@ -41,6 +42,23 @@ class MemoryRepository:
         self.items: dict[UUID, Purchase] = {}
         self.by_key: dict[tuple[str, str], UUID] = {}
         self.reject_duplicate_result = False
+        self.operator_actions: dict[tuple[str, str], tuple[str, UUID]] = {}
+
+    @staticmethod
+    def make_purchase(purchase_id, *, state=PurchaseState.CREATED):
+        return Purchase(
+            id=purchase_id,
+            consumer_id="seller",
+            idempotency_key=f"test:{purchase_id}",
+            request_id=f"test:{purchase_id}",
+            provider_code="interhub",
+            service_id=1,
+            account="",
+            params={},
+            request_fingerprint="fingerprint",
+            provider_operation_id=f"hub-test-{purchase_id.hex}",
+            state=state,
+        )
 
     def create_or_get(self, request: PurchaseRequest, fingerprint: str):
         key = (request.consumer_id, request.idempotency_key)
@@ -137,6 +155,36 @@ class MemoryRepository:
         item.state = PurchaseState.REQUIRES_ATTENTION
         item.provider_message = message
         return item
+
+    def resolve_attention(
+        self,
+        purchase_id,
+        operator_id,
+        request_id,
+        action_fingerprint,
+        decision,
+        reason,
+        result_value,
+        result_hash,
+        _data_secret,
+    ):
+        key = (operator_id, request_id)
+        existing = self.operator_actions.get(key)
+        if existing:
+            if existing[0] != action_fingerprint:
+                raise IdempotencyConflict("operator conflict")
+            return self.items[existing[1]], False
+        item = self.items[purchase_id]
+        if item.state != PurchaseState.REQUIRES_ATTENTION:
+            raise RuntimeError("not awaiting attention")
+        item.state = (
+            PurchaseState.FAILED if decision == "confirm_failed" else PurchaseState.SUCCEEDED
+        )
+        item.last_error = reason if decision == "confirm_failed" else ""
+        item.result_ciphertext = result_value.encode("utf-8") if result_value else None
+        item.result_hash = result_hash
+        self.operator_actions[key] = (action_fingerprint, purchase_id)
+        return item, True
 
 
 class FakeProvider:

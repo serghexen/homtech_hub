@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from hmac import compare_digest
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 import psycopg
@@ -14,9 +14,16 @@ from pydantic import BaseModel, Field
 from hub import __version__
 from hub.config import Settings, load_settings
 from hub.domain import Purchase, PurchaseRequest, valid_request_id
+from hub.operator_service import OperatorDecision, OperatorService
 from hub.providers.base import ProviderError
 from hub.providers.interhub import InterHubProvider
-from hub.repository import IdempotencyConflict, PostgresPurchaseRepository
+from hub.repository import (
+    DuplicateSupplierResult,
+    IdempotencyConflict,
+    OperatorActionConflict,
+    PostgresPurchaseRepository,
+    PurchaseNotAwaitingAttention,
+)
 from hub.service import PurchaseService
 
 
@@ -73,6 +80,45 @@ class ObservabilitySummaryOut(BaseModel):
     stale_after_sec: int
 
 
+class OperatorPurchaseOut(BaseModel):
+    id: UUID
+    consumer_id: str
+    request_id: str
+    provider_code: str
+    service_id: int
+    provider_operation_id: str
+    state: str
+    amount: str | None
+    provider_status: int | None
+    provider_transaction_id: str
+    status_check_attempts: int
+    created_at: datetime | None
+    updated_at: datetime | None
+    pay_started_at: datetime | None
+    completed_at: datetime | None
+    last_error: str
+
+
+class OperatorResolutionIn(BaseModel):
+    decision: Literal["confirm_failed", "record_success"]
+    reason: str = Field(min_length=3, max_length=1000)
+    result_value: str = Field(default="", max_length=5000)
+
+
+class OperatorResolutionOut(BaseModel):
+    purchase: OperatorPurchaseOut
+    action_created: bool
+
+
+class OperatorActionOut(BaseModel):
+    id: UUID
+    operator_id: str
+    request_id: str
+    decision: str
+    reason: str
+    created_at: datetime
+
+
 def normalize_request_id(value: str) -> str:
     request_id = value.strip()
     if not request_id:
@@ -82,6 +128,12 @@ def normalize_request_id(value: str) -> str:
     if not valid_request_id(request_id):
         raise ValueError("X-Request-ID must contain 1 to 128 safe characters")
     return request_id
+
+
+def required_request_id(value: str) -> str:
+    if not value:
+        raise ValueError("X-Request-ID is required for operator decisions")
+    return normalize_request_id(value)
 
 
 def purchase_out(purchase: Purchase) -> PurchaseOut:
@@ -101,11 +153,33 @@ def purchase_out(purchase: Purchase) -> PurchaseOut:
     )
 
 
+def operator_purchase_out(purchase: Purchase) -> OperatorPurchaseOut:
+    return OperatorPurchaseOut(
+        id=purchase.id,
+        consumer_id=purchase.consumer_id,
+        request_id=purchase.request_id,
+        provider_code=purchase.provider_code,
+        service_id=purchase.service_id,
+        provider_operation_id=purchase.provider_operation_id,
+        state=str(purchase.state),
+        amount=str(purchase.amount) if purchase.amount is not None else None,
+        provider_status=purchase.provider_status,
+        provider_transaction_id=purchase.provider_transaction_id,
+        status_check_attempts=purchase.status_check_attempts,
+        created_at=purchase.created_at,
+        updated_at=purchase.updated_at,
+        pay_started_at=purchase.pay_started_at,
+        completed_at=purchase.completed_at,
+        last_error=purchase.last_error,
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     configured = settings or load_settings()
     repository = PostgresPurchaseRepository(configured.database_url)
     interhub = InterHubProvider(configured)
     service = PurchaseService(repository, {interhub.code: interhub}, configured)
+    operator_service = OperatorService(repository, configured.data_secret)
     application = FastAPI(title="HomTech Supplier Hub", version=__version__)
 
     def authenticated_client(
@@ -117,6 +191,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not expected or not compare_digest(expected, x_hub_key.strip()):
             raise HTTPException(status_code=401, detail="Invalid Supplier Hub credentials")
         return client_id
+
+    def authenticated_operator(
+        x_hub_operator: str = Header(default=""),
+        x_hub_operator_key: str = Header(default=""),
+    ) -> str:
+        operator_id = x_hub_operator.strip()
+        expected = configured.operators.get(operator_id, "")
+        if not expected or not compare_digest(expected, x_hub_operator_key.strip()):
+            raise HTTPException(status_code=401, detail="Invalid Supplier Hub operator credentials")
+        return operator_id
 
     @application.get("/live")
     def live() -> dict[str, str]:
@@ -221,6 +305,74 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if value is None:
             raise HTTPException(status_code=409, detail="Purchase result is not available")
         return PurchaseResultOut(purchase_id=purchase.id, value=value)
+
+    @application.get("/v1/operator/purchases", response_model=list[OperatorPurchaseOut])
+    def operator_attention_list(
+        limit: int = 50,
+        offset: int = 0,
+        _operator_id: str = Depends(authenticated_operator),
+    ) -> list[OperatorPurchaseOut]:
+        bounded_limit = max(1, min(limit, 100))
+        bounded_offset = max(0, offset)
+        return [
+            operator_purchase_out(purchase)
+            for purchase in repository.list_requires_attention(bounded_limit, bounded_offset)
+        ]
+
+    @application.get("/v1/operator/purchases/{purchase_id}", response_model=OperatorPurchaseOut)
+    def operator_purchase_detail(
+        purchase_id: UUID,
+        _operator_id: str = Depends(authenticated_operator),
+    ) -> OperatorPurchaseOut:
+        purchase = repository.get(purchase_id)
+        if not purchase:
+            raise HTTPException(status_code=404, detail="Purchase not found")
+        return operator_purchase_out(purchase)
+
+    @application.post(
+        "/v1/operator/purchases/{purchase_id}/resolve",
+        response_model=OperatorResolutionOut,
+    )
+    def operator_resolve_purchase(
+        purchase_id: UUID,
+        payload: OperatorResolutionIn,
+        operator_id: str = Depends(authenticated_operator),
+        x_request_id: str = Header(default=""),
+    ) -> OperatorResolutionOut:
+        try:
+            resolution = operator_service.resolve(
+                purchase_id,
+                operator_id,
+                required_request_id(x_request_id),
+                OperatorDecision(payload.decision),
+                payload.reason,
+                payload.result_value,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Purchase not found") from exc
+        except (OperatorActionConflict, PurchaseNotAwaitingAttention, DuplicateSupplierResult) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return OperatorResolutionOut(
+            purchase=operator_purchase_out(resolution.purchase),
+            action_created=resolution.created,
+        )
+
+    @application.get(
+        "/v1/operator/purchases/{purchase_id}/actions",
+        response_model=list[OperatorActionOut],
+    )
+    def operator_purchase_actions(
+        purchase_id: UUID,
+        _operator_id: str = Depends(authenticated_operator),
+    ) -> list[OperatorActionOut]:
+        if not repository.get(purchase_id):
+            raise HTTPException(status_code=404, detail="Purchase not found")
+        return [
+            OperatorActionOut(**action)
+            for action in repository.list_operator_actions(purchase_id)
+        ]
 
     return application
 

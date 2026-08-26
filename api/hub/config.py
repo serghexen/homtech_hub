@@ -26,6 +26,7 @@ def env_int(name: str, default: int, minimum: int, maximum: int) -> int:
 class Settings:
     database_url: str
     clients: dict[str, str]
+    operators: dict[str, str]
     data_secret: str
     purchases_enabled: bool
     worker_poll_sec: int
@@ -61,6 +62,12 @@ class Settings:
             if not client_id or len(secret) < 32:
                 errors.append("each Supplier Hub client must have an id and a secret of at least 32 characters")
                 break
+        if not self.operators:
+            errors.append("SUPPLIER_HUB_OPERATORS_JSON must configure at least one operator")
+        for operator_id, secret in self.operators.items():
+            if not operator_id or len(secret) < 32:
+                errors.append("each Supplier Hub operator must have an id and a secret of at least 32 characters")
+                break
         if self.live_pay_allowed and (not self.interhub_api_url or not self.interhub_token):
             errors.append("InterHub URL and token are required when live payments are enabled")
         return errors
@@ -82,6 +89,7 @@ def load_settings() -> Settings:
     return Settings(
         database_url=os.getenv("DATABASE_URL", "").strip(),
         clients=parse_clients(os.getenv("SUPPLIER_HUB_CLIENTS_JSON", "")),
+        operators=parse_clients(os.getenv("SUPPLIER_HUB_OPERATORS_JSON", "")),
         data_secret=os.getenv("SUPPLIER_HUB_DATA_SECRET", "").strip(),
         purchases_enabled=env_bool("SUPPLIER_HUB_PURCHASES_ENABLED"),
         worker_poll_sec=env_int("SUPPLIER_HUB_WORKER_POLL_SEC", 5, 1, 300),

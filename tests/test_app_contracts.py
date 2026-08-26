@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from uuid import UUID
 
-from hub.app import normalize_request_id
+from hub.app import normalize_request_id, required_request_id
 
 
 class AppContractTests(unittest.TestCase):
@@ -18,6 +18,11 @@ class AppContractTests(unittest.TestCase):
             with self.subTest(value=value[:20]):
                 with self.assertRaises(ValueError):
                     normalize_request_id(value)
+
+    def test_operator_decision_requires_explicit_request_id(self):
+        with self.assertRaises(ValueError):
+            required_request_id("")
+        self.assertEqual(required_request_id("operator:decision-1"), "operator:decision-1")
 
 
 if __name__ == "__main__":

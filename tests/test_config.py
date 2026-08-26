@@ -24,6 +24,13 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(parse_clients("not-json"), {})
         self.assertEqual(parse_clients("[]"), {})
 
+    def test_operator_credentials_are_separate_and_required(self):
+        configured = settings(operators={})
+        self.assertIn(
+            "SUPPLIER_HUB_OPERATORS_JSON must configure at least one operator",
+            configured.readiness_errors(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

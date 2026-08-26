@@ -21,6 +21,24 @@ The first InterHub adapter preserves the safety properties found in the working 
 9. Reusing the same key with different arguments is rejected.
 10. A result hash prevents the same supplier code from being accepted twice.
 
+## Operator reconciliation
+
+`requires_attention` закрывается только через отдельный операторский API. Его
+учётные данные не дают доступ к API потребителей, а сервис решений не получает
+экземпляр supplier provider. Поэтому операторское действие технически не может
+повторить `pay` или выполнить сетевой запрос к InterHub.
+
+Оператор после внешней проверки выбирает один из двух окончательных исходов:
+
+- `confirm_failed` — поставщик подтвердил отсутствие списания;
+- `record_success` — результат найден у поставщика и сохраняется в Hub в
+  зашифрованном виде.
+
+Каждое решение требует отдельный `X-Request-ID`, идемпотентно, выполняется под
+блокировкой строки покупки и записывается в `operator_actions` и
+`purchase_events`. Комментарий сохраняется для аудита, а восстановленный код не
+попадает в историю действий, обычные ответы API или логи.
+
 ## Idempotency key
 
 Seller should generate one key per required unit, for example:

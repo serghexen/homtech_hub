@@ -19,6 +19,7 @@ Staging не использует сеть, БД или миграции CRM. К
 SUPPLIER_HUB_PURCHASES_ENABLED=false
 INTERHUB_PAY_ENABLED=false
 INTERHUB_TOKEN=<configured-outside-git>
+SUPPLIER_HUB_OPERATORS_JSON=<configured-outside-git>
 ```
 
 Worker запускается, но остаётся в paused-режиме. Ни `calculate`, ни `check`, ни `pay`, ни `check_status` автоматически не вызываются.
@@ -57,6 +58,18 @@ sudo docker exec homtech-hub-staging-api-1 python api/scripts/staging_smoke_test
 lease/state transitions и pgcrypto. Он отказывается работать при разрешённых
 live-покупках, не вызывает InterHub и удаляет созданную им запись и события в
 `finally`.
+
+## Операторский smoke-тест без поставщика
+
+```bash
+sudo docker exec homtech-hub-staging-api-1 python api/scripts/operator_smoke_test.py
+```
+
+Тест создаёт только синтетические строки `requires_attention`, проверяет
+отдельную авторизацию, оба локальных решения, идемпотентность, аудит и
+шифрование восстановленного результата. Он отказывается запускаться, если хотя
+бы один payment-флаг включён, не вызывает InterHub и удаляет тестовые покупки,
+события и операторские действия в `finally`.
 
 ## Ограничения эксплуатации
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 import re
@@ -66,6 +67,11 @@ class Purchase:
     result_ciphertext: bytes | None = None
     result_hash: str = ""
     status_check_attempts: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    pay_started_at: datetime | None = None
+    completed_at: datetime | None = None
+    last_error: str = ""
 
     @property
     def result_available(self) -> bool:

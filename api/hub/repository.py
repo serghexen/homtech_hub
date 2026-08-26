@@ -22,6 +22,14 @@ class DuplicateSupplierResult(RuntimeError):
     pass
 
 
+class OperatorActionConflict(ValueError):
+    pass
+
+
+class PurchaseNotAwaitingAttention(RuntimeError):
+    pass
+
+
 class PurchaseRepository(Protocol):
     def create_or_get(self, request: PurchaseRequest, fingerprint: str) -> tuple[Purchase, bool]: ...
     def get(self, purchase_id: UUID, consumer_id: str | None = None) -> Purchase | None: ...
@@ -46,6 +54,20 @@ class PurchaseRepository(Protocol):
     def read_result(self, purchase_id: UUID, consumer_id: str, data_secret: str) -> str | None: ...
     def list_events(self, purchase_id: UUID, consumer_id: str) -> list[dict[str, Any]]: ...
     def observability_summary(self, consumer_id: str, stale_after_sec: int) -> dict[str, Any]: ...
+    def list_requires_attention(self, limit: int, offset: int) -> list[Purchase]: ...
+    def list_operator_actions(self, purchase_id: UUID) -> list[dict[str, Any]]: ...
+    def resolve_attention(
+        self,
+        purchase_id: UUID,
+        operator_id: str,
+        request_id: str,
+        action_fingerprint: str,
+        decision: str,
+        reason: str,
+        result_value: str,
+        result_hash: str,
+        data_secret: str,
+    ) -> tuple[Purchase, bool]: ...
 
 
 def _purchase(row: dict[str, Any]) -> Purchase:
@@ -71,6 +93,11 @@ def _purchase(row: dict[str, Any]) -> Purchase:
         result_ciphertext=bytes(row["result_ciphertext"]) if row.get("result_ciphertext") is not None else None,
         result_hash=str(row.get("result_hash") or ""),
         status_check_attempts=int(row.get("status_check_attempts") or 0),
+        created_at=row.get("created_at"),
+        updated_at=row.get("updated_at"),
+        pay_started_at=row.get("pay_started_at"),
+        completed_at=row.get("completed_at"),
+        last_error=str(row.get("last_error") or ""),
     )
 
 
@@ -82,17 +109,24 @@ class PostgresPurchaseRepository:
         return psycopg.connect(self.database_url, row_factory=dict_row)
 
     @staticmethod
-    def _event(cursor, purchase_id: UUID, event_type: str, old: str | None, new: str | None) -> None:
+    def _event(
+        cursor,
+        purchase_id: UUID,
+        event_type: str,
+        old: str | None,
+        new: str | None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         cursor.execute(
             """
             INSERT INTO supplier_hub.purchase_events(
-                purchase_id, request_id, event_type, from_state, to_state, message
+                purchase_id, request_id, event_type, from_state, to_state, message, details
             )
-            SELECT id, request_id, %s, %s, %s, ''
+            SELECT id, request_id, %s, %s, %s, '', %s::jsonb
             FROM supplier_hub.purchases
             WHERE id=%s
             """,
-            (event_type, old, new, purchase_id),
+            (event_type, old, new, json.dumps(details or {}), purchase_id),
         )
 
     def create_or_get(self, request: PurchaseRequest, fingerprint: str) -> tuple[Purchase, bool]:
@@ -152,6 +186,164 @@ class PostgresPurchaseRepository:
                 row = cursor.fetchone()
             connection.commit()
         return _purchase(row) if row else None
+
+    def list_requires_attention(self, limit: int, offset: int) -> list[Purchase]:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM supplier_hub.purchases
+                    WHERE state='requires_attention'
+                    ORDER BY created_at, id
+                    LIMIT %s OFFSET %s
+                    """,
+                    (limit, offset),
+                )
+                rows = cursor.fetchall()
+            connection.commit()
+        return [_purchase(row) for row in rows]
+
+    def list_operator_actions(self, purchase_id: UUID) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, operator_id, request_id, decision, reason, created_at
+                    FROM supplier_hub.operator_actions
+                    WHERE purchase_id=%s
+                    ORDER BY created_at, id
+                    """,
+                    (purchase_id,),
+                )
+                rows = cursor.fetchall()
+            connection.commit()
+        return [dict(row) for row in rows]
+
+    def resolve_attention(
+        self,
+        purchase_id: UUID,
+        operator_id: str,
+        request_id: str,
+        action_fingerprint: str,
+        decision: str,
+        reason: str,
+        result_value: str,
+        result_hash: str,
+        data_secret: str,
+    ) -> tuple[Purchase, bool]:
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT action.action_fingerprint, purchase.*
+                        FROM supplier_hub.operator_actions AS action
+                        JOIN supplier_hub.purchases AS purchase ON purchase.id=action.purchase_id
+                        WHERE action.operator_id=%s AND action.request_id=%s
+                        """,
+                        (operator_id, request_id),
+                    )
+                    existing = cursor.fetchone()
+                    if existing:
+                        if str(existing["action_fingerprint"]) != action_fingerprint:
+                            raise OperatorActionConflict(
+                                "Operator request id is already used with another decision"
+                            )
+                        return _purchase(existing), False
+
+                    cursor.execute(
+                        "SELECT * FROM supplier_hub.purchases WHERE id=%s FOR UPDATE",
+                        (purchase_id,),
+                    )
+                    current = cursor.fetchone()
+                    if not current:
+                        raise KeyError("Purchase not found")
+                    # A concurrent retry may have waited for this purchase lock. Re-read
+                    # the action after acquiring it so the retry remains idempotent.
+                    cursor.execute(
+                        """
+                        SELECT action_fingerprint
+                        FROM supplier_hub.operator_actions
+                        WHERE operator_id=%s AND request_id=%s
+                        """,
+                        (operator_id, request_id),
+                    )
+                    concurrent_action = cursor.fetchone()
+                    if concurrent_action:
+                        if str(concurrent_action["action_fingerprint"]) != action_fingerprint:
+                            raise OperatorActionConflict(
+                                "Operator request id is already used with another decision"
+                            )
+                        return _purchase(current), False
+                    if str(current["state"]) != str(PurchaseState.REQUIRES_ATTENTION):
+                        raise PurchaseNotAwaitingAttention(
+                            "Purchase is no longer awaiting operator attention"
+                        )
+
+                    if decision == "confirm_failed":
+                        cursor.execute(
+                            """
+                            UPDATE supplier_hub.purchases
+                            SET state='failed', last_error=%s, completed_at=now(), updated_at=now(),
+                                lease_token=NULL, lease_until=NULL
+                            WHERE id=%s AND state='requires_attention'
+                            RETURNING *
+                            """,
+                            (reason, purchase_id),
+                        )
+                    elif decision == "record_success":
+                        cursor.execute(
+                            """
+                            UPDATE supplier_hub.purchases
+                            SET state='succeeded', last_error='', completed_at=now(), updated_at=now(),
+                                result_ciphertext=pgp_sym_encrypt(
+                                    %s, %s, 'cipher-algo=aes256, compress-algo=0'
+                                ),
+                                result_hash=%s, lease_token=NULL, lease_until=NULL
+                            WHERE id=%s AND state='requires_attention'
+                            RETURNING *
+                            """,
+                            (result_value, data_secret, result_hash, purchase_id),
+                        )
+                    else:
+                        raise ValueError("Unknown operator decision")
+                    resolved = cursor.fetchone()
+                    if not resolved:
+                        raise PurchaseNotAwaitingAttention(
+                            "Purchase is no longer awaiting operator attention"
+                        )
+
+                    cursor.execute(
+                        """
+                        INSERT INTO supplier_hub.operator_actions(
+                            id, purchase_id, operator_id, request_id, action_fingerprint,
+                            decision, reason, result_hash
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            uuid4(), purchase_id, operator_id, request_id, action_fingerprint,
+                            decision, reason, result_hash,
+                        ),
+                    )
+                    self._event(
+                        cursor,
+                        purchase_id,
+                        "operator_reconciled",
+                        str(PurchaseState.REQUIRES_ATTENTION),
+                        str(resolved["state"]),
+                        {
+                            "operator_id": operator_id,
+                            "operator_request_id": request_id,
+                            "decision": decision,
+                        },
+                    )
+                connection.commit()
+            return _purchase(resolved), True
+        except psycopg.errors.UniqueViolation as exc:
+            raise DuplicateSupplierResult(
+                "Result is already assigned to another purchase"
+            ) from exc
 
     def list_events(self, purchase_id: UUID, consumer_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
