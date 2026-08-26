@@ -39,6 +39,21 @@ class PurchaseIn(BaseModel):
     quantity: int = Field(default=1, ge=1, le=1)
 
 
+class ProviderQuoteIn(BaseModel):
+    service_id: int = Field(gt=0)
+    account: str = Field(default="", max_length=500)
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProviderQuoteOut(BaseModel):
+    provider_code: str
+    service_id: int
+    success: bool
+    status: int
+    message: str
+    fixed_amount: str
+
+
 class PurchaseOut(BaseModel):
     id: UUID
     idempotency_key: str
@@ -274,6 +289,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return interhub.balance()
         except ProviderError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @application.post("/v1/providers/interhub/quote", response_model=ProviderQuoteOut)
+    def provider_quote(
+        payload: ProviderQuoteIn,
+        _client_id: str = Depends(authenticated_client),
+    ) -> ProviderQuoteOut:
+        # calculate не создаёт покупку и не вызывает check/pay. Endpoint нужен
+        # потребителям для явного ценового лимита будущей идемпотентной заявки.
+        try:
+            result = interhub.calculate({
+                "service_id": payload.service_id,
+                "account": payload.account,
+                "agent_transaction_id": f"hub-quote-{uuid4().hex}",
+                "params": payload.params,
+            })
+        except ProviderError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return ProviderQuoteOut(
+            provider_code=interhub.code,
+            service_id=payload.service_id,
+            success=result.success,
+            status=result.status,
+            message=result.message,
+            fixed_amount=str(result.fixed_amount),
+        )
 
     @application.post("/v1/purchases", response_model=PurchaseOut, status_code=202)
     def create_purchase(

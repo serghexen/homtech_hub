@@ -47,6 +47,7 @@ INTERHUB_PAY_ENABLED=true
 - `GET /ready` — конфигурация и отдельная БД доступны;
 - `GET /v1/providers/interhub/services` — каталог InterHub;
 - `GET /v1/providers/interhub/balance` — баланс InterHub;
+- `POST /v1/providers/interhub/quote` — актуальная цена через `calculate`, без `check/pay` и покупки;
 - `POST /v1/purchases` — идемпотентно поставить одну покупку в очередь;
 - `GET /v1/purchases/{id}` — состояние без раскрытия кода;
 - `GET /v1/purchases/{id}/events` — безопасная история переходов без сообщений и кодов;

@@ -35,6 +35,11 @@ class AppContractTests(unittest.TestCase):
         self.assertIn(("/v1/operator/purchases/{purchase_id}/events", ("GET",)), routes)
         self.assertIn(("/v1/operator/purchases/{purchase_id}/result", ("POST",)), routes)
 
+    def test_safe_provider_quote_route_is_mounted_separately_from_purchase(self):
+        app = create_app(settings())
+        routes = {(route.path, tuple(sorted(route.methods or ()))) for route in app.routes}
+        self.assertIn(("/v1/providers/interhub/quote", ("POST",)), routes)
+
     def test_operator_history_exposes_result_availability_but_not_plaintext(self):
         purchase = Purchase(
             id=UUID("b0a7b2f4-950d-4359-a718-0da94b651528"),
