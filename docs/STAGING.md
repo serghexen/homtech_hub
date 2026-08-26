@@ -8,14 +8,17 @@
 - API: `127.0.0.1:8010`, извне не опубликован;
 - PostgreSQL: отдельный контейнер и volume `homtech-hub-staging_supplier_hub_postgres`.
 
-Staging не использует сеть, БД, миграции или секреты CRM. Контейнеры имеют отдельные лимиты CPU/RAM.
+Staging не использует сеть, БД или миграции CRM. Контейнеры имеют отдельные
+лимиты CPU/RAM. Учётные данные InterHub хранятся только во внешнем
+`.env.staging`, не входят в Git или Docker image и нужны для GET-проверок
+каталога и баланса при выключенных покупках.
 
 ## Текущее безопасное состояние
 
 ```dotenv
 SUPPLIER_HUB_PURCHASES_ENABLED=false
 INTERHUB_PAY_ENABLED=false
-INTERHUB_TOKEN=
+INTERHUB_TOKEN=<configured-outside-git>
 ```
 
 Worker запускается, но остаётся в paused-режиме. Ни `calculate`, ни `check`, ни `pay`, ни `check_status` автоматически не вызываются.
@@ -31,6 +34,17 @@ sudo docker compose -p homtech-hub-staging --env-file .env.staging logs --tail=1
 ```
 
 Ожидаемый readiness содержит `"purchases_enabled": false`, а worker пишет `purchases are paused by kill switches`.
+
+## Read-only проверка InterHub
+
+```bash
+sudo docker exec homtech-hub-staging-api-1 python api/scripts/provider_readonly_check.py
+```
+
+Проверка сначала убеждается, что live-покупки выключены, затем вызывает через
+Hub только `services` и `balance`. Она выводит количество услуг и валюту, но не
+показывает токен или фактический баланс. При включённых payment-флагах скрипт
+завершится до обращения к провайдеру.
 
 ## Smoke-тест без поставщика
 
