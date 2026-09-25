@@ -1,0 +1,15 @@
+# В build context Airpay попадают только исходники и его миграции.
+**
+!Dockerfile.airpay
+!requirements.txt
+!requirements-airpay.txt
+!api/
+!api/**
+!migrations/
+!migrations/airpay/
+!migrations/airpay/**
+**/__pycache__
+**/*.pyc
+**/.env*
+**/*.pem
+**/*.key

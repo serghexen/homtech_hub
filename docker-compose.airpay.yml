@@ -1,0 +1,36 @@
+# Самостоятельный проект: никогда не объединять с основным compose Interhub.
+name: supplier-hub-airpay
+services:
+  airpay-migrate:
+    image: supplier-hub-airpay:${AIRPAY_RELEASE_TAG:?Set AIRPAY_RELEASE_TAG}
+    build:
+      context: .
+      dockerfile: Dockerfile.airpay
+    env_file: ${AIRPAY_ENV_FILE:?Set dedicated AIRPAY_ENV_FILE}
+    environment:
+      AIRPAY_PAYMENTS_ENABLED: "false"
+    command: ["python", "api/scripts/run_airpay_migrations.py", "/app/migrations/airpay"]
+    networks: [airpay-existing]
+    restart: "no"
+    mem_limit: 256m
+    cpus: 0.50
+  airpay-api:
+    image: supplier-hub-airpay:${AIRPAY_RELEASE_TAG:?Set AIRPAY_RELEASE_TAG}
+    build:
+      context: .
+      dockerfile: Dockerfile.airpay
+    env_file: ${AIRPAY_ENV_FILE:?Set dedicated AIRPAY_ENV_FILE}
+    environment:
+      # По умолчанию даже разрешение из env-файла не включает оплату при первом запуске.
+      AIRPAY_PAYMENTS_ENABLED: ${AIRPAY_DEPLOY_PAYMENTS_ENABLED:-false}
+    command: ["uvicorn", "hub.airpay_app:app", "--host", "0.0.0.0", "--port", "8011", "--limit-concurrency", "16", "--backlog", "128"]
+    ports:
+      - "127.0.0.1:${AIRPAY_HUB_PORT:-8011}:8011"
+    networks: [airpay-existing]
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.50
+networks:
+  airpay-existing:
+    external: true
+    name: ${AIRPAY_DOCKER_NETWORK:?Set existing Hub Docker network}
