@@ -3,7 +3,7 @@
 import base64
 import json
 import math
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import ssl
 import urllib.error
 import urllib.request
@@ -137,6 +137,20 @@ def build_airpay_service(environ, *, local_ui=False):
 
     return AirpayService(get_balance=get_balance, get_services=get_services, get_service=get_service, check=check,
                          pay=pay, get_voucher=get_voucher, payments_enabled=payments_enabled)
+
+
+def available_airpay_funds(balance):
+    # Разрешённый овердрафт увеличивает доступную сумму; отрицательный баланс уже отражает использованный кредит.
+    try:
+        raw_balance, raw_overdraft = balance['balance'], balance.get('overdraft', 0)
+        if not balance.get('configured') or isinstance(raw_balance, bool) or isinstance(raw_overdraft, bool):
+            raise ValueError
+        current, credit = Decimal(str(raw_balance)), Decimal(str(raw_overdraft))
+        if not current.is_finite() or not credit.is_finite() or credit < 0:
+            raise ValueError
+    except (KeyError, TypeError, ValueError, InvalidOperation):
+        raise HTTPException(502, 'Airpay вернул некорректный баланс или овердрафт') from None
+    return current + credit
 
 
 def normalize_airpay_balance(payload):

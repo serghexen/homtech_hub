@@ -60,7 +60,7 @@ def create_airpay_app(environ=None, connect=None):
             raise HTTPException(503, 'Airpay Hub configuration is incomplete')
         try:
             with connection() as conn:
-                tables = ('airpay_transactions', 'airpay_jobs', 'airpay_renewals', 'airpay_result_access', 'airpay_events', 'airpay_operator_actions')
+                tables = ('airpay_transactions', 'airpay_jobs', 'airpay_renewals', 'airpay_result_access', 'airpay_events', 'airpay_operator_actions', 'airpay_diagnostic_runs', 'airpay_diagnostic_items')
                 for table in tables:
                     if conn.execute('SELECT to_regclass(%s)', ('supplier_hub_airpay.' + table,)).fetchone()[0] is None:
                         raise ValueError('migrations')

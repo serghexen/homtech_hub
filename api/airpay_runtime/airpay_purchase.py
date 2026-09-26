@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
+from airpay_runtime.airpay_service import available_airpay_funds
 from airpay_runtime.airpay_preparation import amount_value, normalize_check
 from airpay_runtime.airpay_contract import transaction_outcome
 
@@ -91,7 +92,8 @@ class AirpayPurchase:
                     currency = balance.get('currency', '')
                     if not balance.get('configured') or not currency:
                         raise HTTPException(409, 'Не удалось определить валюту агентского счёта')
-                    if Decimal(str(balance['balance'])) < Decimal(amount):
+                    # Лимит включает разрешённый кредит, а не только остаток депозита.
+                    if available_airpay_funds(balance) < Decimal(amount):
                         raise HTTPException(409, 'Недостаточно средств на депозите поставщика')
                 except HTTPException as exc:
                     reason = str(exc.detail)
@@ -133,7 +135,8 @@ class AirpayPurchase:
             if Decimal(amount) != Decimal(str(row['amount'])):
                 raise HTTPException(409, 'Подтверждённая цена не совпадает с подготовкой')
             balance = self.service.get_balance()
-            if balance.get('currency') != row['currency'] or not balance.get('configured') or Decimal(str(balance['balance'])) < Decimal(amount):
+            # Перед оплатой заново проверяем доступный остаток вместе с овердрафтом.
+            if balance.get('currency') != row['currency'] or not balance.get('configured') or available_airpay_funds(balance) < Decimal(amount):
                 raise HTTPException(409, 'Изменились баланс или валюта счёта. Обновите подготовку.')
             payload = {**row['request_payload'], 'amountTo': float(amount)}
             record.update(pay_request=payload, state='processing', provider_message='Оплата отправляется; ожидается результат')

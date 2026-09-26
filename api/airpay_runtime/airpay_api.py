@@ -13,6 +13,7 @@ from airpay_runtime.airpay_jobs import AirpayJobs, hide_codes
 from airpay_runtime.airpay_contract import CONTRACT_HEADER, CONTRACT_VERSION, describe_contract
 
 from airpay_runtime.airpay_history import read_history_filters, export_history
+from airpay_runtime.airpay_diagnostics import AirpayDiagnostics, AirpayDiagnosticStore
 
 AirpayTransactionId = Annotated[int, Path(ge=1, le=9223372036854775807)]
 
@@ -57,6 +58,11 @@ class AirpayPrepareIn(BaseModel):
     purchase_kind: Literal['voucher', 'topup'] | None = None
     preparation_key: UUID | None = None
     quantity: int = Field(default=1, ge=1, le=20, strict=True)
+
+
+class AirpayDiagnosticIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    request_id: UUID
 
 
 class AirpayCheckIn(BaseModel):
@@ -154,6 +160,37 @@ def mount_airpay_routes(app, *, get_current_user, service, get_secret=lambda: ''
     def get_airpay_service(service_id: str = Query(min_length=1, max_length=128), user=Depends(get_current_user)):
         # Точная схема выбранной услуги нужна для актуальной формы ввода.
         return service.get_service(service_id)
+
+    def diagnostics():
+        # Диагностика отделена от подготовки: ей не выдаются pay, voucher или токен покупки.
+        require_journal()
+        return AirpayDiagnostics(AirpayDiagnosticStore(repository.connect), get_services=service.get_services,
+                                 get_service=service.get_service, check=service.check)
+
+    @app.get('/integrations/airpay/diagnostics')
+    def diagnostic_latest(owner=Depends(require_owner)):
+        # Открытие окна читает последний сохранённый отчёт без фонового старта.
+        return diagnostics().store.read(owner)
+
+    @app.post('/integrations/airpay/diagnostics')
+    def diagnostic_start(payload: AirpayDiagnosticIn, owner=Depends(require_owner)):
+        # Новый запуск фиксирует каталог; каждая проверка выполняется отдельным шагом.
+        return diagnostics().start(owner, payload.request_id)
+
+    @app.get('/integrations/airpay/diagnostics/{run_id}')
+    def diagnostic_read(run_id: UUID, owner=Depends(require_owner)):
+        # Отчёт можно перечитать после обрыва соединения без повторения проверки.
+        return diagnostics().store.read(owner, run_id)
+
+    @app.post('/integrations/airpay/diagnostics/{run_id}/next')
+    def diagnostic_next(run_id: UUID, owner=Depends(require_owner)):
+        # Опрос доступен и при выключенной оплате; у него нет платёжного шага.
+        return diagnostics().step(owner, run_id)
+
+    @app.post('/integrations/airpay/diagnostics/{run_id}/cancel')
+    def diagnostic_cancel(run_id: UUID, owner=Depends(require_owner)):
+        # Закрытие запуска оставляет отчёт и не отменяет никакие покупки.
+        return diagnostics().cancel(owner, run_id)
 
     @app.post('/integrations/airpay/prepare')
     def prepare_airpay(payload: AirpayPrepareIn, owner=Depends(require_owner)):

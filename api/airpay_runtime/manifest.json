@@ -1,23 +1,23 @@
 {
   "airpay_api.py": {
-    "source_sha256": "65a2ca46115677f077ad2e046443781e51be8048f12ca5d7cd0816d50f64ddec",
-    "package_sha256": "4a9ead4d92f8ee68e79e97dda4e9e6dfe6238519219a7be7cb83dca0773ea09f"
+    "source_sha256": "12a97350ec6b8c3883422d4dd068c1f14e2f31463b022ae86ae0a7e85770f01f",
+    "package_sha256": "8b6f917962cec8d9b02350561565843544506829d1530eda38c4cfbd10f5c01b"
   },
   "airpay_service.py": {
-    "source_sha256": "3a1693bcd7c2cc57b97546186879dd03dde6c240057195ed42c92a744c946a0e",
-    "package_sha256": "a8ac8fe3c6986f2a44881deee3749ef7cd830bd5a2fde9ed33a669d40f598814"
+    "source_sha256": "11291153f01b9b27fb16e3d3633a2e3397730793ad7f55f09053ce701f989188",
+    "package_sha256": "cc25f04434f422724809f11bfbd58b28f9cad5570bb95ae37dd2ef11ee5c5532"
   },
   "airpay_preparation.py": {
     "source_sha256": "39e183668f22a6e73d7c812432c5b142f06d44e181bb6a964e47f3d97ea27198",
     "package_sha256": "c7370b7399f81309ab1adfc9399540a4332671c5c2b8870263f6e931b0d29701"
   },
   "airpay_purchase.py": {
-    "source_sha256": "f61c6d5e6fbaa244e940b901f48bf5bd05fe26870fb0f19cadabfe22ffb38634",
-    "package_sha256": "2cbef965281d57c9b1c9e304a9e2d1e02ad720b2f62f0edb0022fe177b7fdcfc"
+    "source_sha256": "2549a4ec4d98d84b1a17fb24b905c355838e720a27294deb63a0cfb2ed373623",
+    "package_sha256": "4b5671d5f10c945969e3817ed353be2f131372174924c468f5a799bf00b8975f"
   },
   "airpay_batch.py": {
-    "source_sha256": "0c5953413f50f9e23929ae95e42f11915945a3413823dc7206ea51318de9bd64",
-    "package_sha256": "72fd6a0db25274dd6a8a6d0a5ebf01cd14c8285b2cd8c9bc8a2d201b4d266740"
+    "source_sha256": "6b7efd3e1fc6667c2f2dee32a9f2a02f0c542fa8c5662b2ae5e3098037486e5f",
+    "package_sha256": "b813c68ef5743b37c2ca0259922b71a4a83084ac5bd8f7e5c61f4bcb99fb6e64"
   },
   "airpay_repository.py": {
     "source_sha256": "df2f33b0d254e750214ced170bc810112455eb001a798c001b1a128c2e23c34a",
@@ -42,6 +42,10 @@
   "airpay_queue.py": {
     "source_sha256": "f1e2024bd33e01e304cbe2220a925c9435adec60be19e4ae0da761c62c6edc79",
     "package_sha256": "7902d91c397f494be9c3f8afab7e4206389ba54f8047589d525a0c6234855cae"
+  },
+  "airpay_diagnostics.py": {
+    "source_sha256": "60d9dcf5a3658c74c4b02f2f7f6aa83f02218800558b7fe0aa8ad4fef4c4b2fb",
+    "package_sha256": "22a4e196369079776188b0db9f4b6afd6271f36d17062bb276b17477f54bd1f9"
   },
   "transport.py": {
     "source_sha256": "4764e855e69bd18dc2f8e83a28cb7ec47c8c5282e2efd1e5e24514868096ae65",

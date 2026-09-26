@@ -7,6 +7,7 @@ import uuid
 import jwt
 from fastapi import HTTPException
 
+from airpay_runtime.airpay_service import available_airpay_funds
 from airpay_runtime.airpay_preparation import DRAFT_AUDIENCE, amount_value
 from airpay_runtime.airpay_purchase import now_utc, public_transaction
 
@@ -93,7 +94,8 @@ class AirpayBatch:
                 reason = 'Не удалось определить общую цену и валюту покупки'
             if not reason:
                 balance = self.service.get_balance()
-                if not balance.get('configured') or balance.get('currency') not in currencies or Decimal(str(balance['balance'])) < total:
+                # Всю пачку сравниваем с единым доступным остатком с учётом кредита.
+                if not balance.get('configured') or balance.get('currency') not in currencies or available_airpay_funds(balance) < total:
                     reason = 'Недостаточно средств на депозите поставщика для всего количества'
             prices = {str(row['amount']) for row in rows}
             return {**first, 'quantity': len(rows), 'purchase_amount': format(total, '.2f'),
@@ -120,8 +122,9 @@ class AirpayBatch:
             if any(row['expires_at'] <= now_utc() for row in pending):
                 raise HTTPException(410, 'Цена устарела. Неоплаченные позиции требуют новой подготовки.')
             balance = self.service.get_balance()
+            # Уже оплаченные позиции повторно не расходуют доступный лимит при продолжении.
             remaining = sum((Decimal(str(row['amount'])) for row in pending), Decimal(0))
-            if not balance.get('configured') or any(row['currency'] != balance.get('currency') for row in rows) or Decimal(str(balance['balance'])) < remaining:
+            if not balance.get('configured') or any(row['currency'] != balance.get('currency') for row in rows) or available_airpay_funds(balance) < remaining:
                 raise HTTPException(409, 'Недостаточно средств для оставшегося количества или изменилась валюта')
             progress(len(rows) - len(pending))
             for index, row in enumerate(pending):
