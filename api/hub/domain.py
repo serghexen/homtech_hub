@@ -43,7 +43,7 @@ class PurchaseRequest:
     request_id: str
     provider_code: str
     service_id: int
-    max_amount: Decimal
+    max_amount: Decimal | None = None
     account: str = ""
     params: dict[str, Any] = field(default_factory=dict)
 

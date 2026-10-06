@@ -5,12 +5,19 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from hub.app import create_app, normalize_request_id, operator_purchase_out, required_request_id
+from hub.app import PurchaseIn, create_app, normalize_request_id, operator_purchase_out, required_request_id
 from hub.domain import Purchase, PurchaseState
 from tests.helpers import settings
 
 
 class AppContractTests(unittest.TestCase):
+    def test_purchase_accepts_omitted_or_legacy_price(self):
+        # Контракт поддерживает новые заявки без лимита и прежний формат Seller.
+        for extra, expected in (({}, None), ({"max_amount": None}, None), ({"max_amount": "182.41"}, Decimal("182.41"))):
+            with self.subTest(extra=extra):
+                payload = PurchaseIn(idempotency_key="order-1", service_id=9826, **extra)
+                self.assertEqual(payload.max_amount, expected)
+
     def test_request_id_accepts_safe_correlation_value(self):
         self.assertEqual(normalize_request_id("seller:order-1/item-2"), "seller:order-1/item-2")
 

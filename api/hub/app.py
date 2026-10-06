@@ -34,7 +34,8 @@ class PurchaseIn(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
     provider_code: str = Field(default="interhub", min_length=1, max_length=40)
     service_id: int = Field(gt=0)
-    max_amount: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
+    # Принимаем старое поле для совместимости; ограничение цены больше не применяется.
+    max_amount: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=6)
     account: str = Field(default="", max_length=500)
     params: dict[str, Any] = Field(default_factory=dict)
     quantity: int = Field(default=1, ge=1, le=1)

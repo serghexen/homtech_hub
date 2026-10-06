@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from dataclasses import replace
+from unittest.mock import Mock
 import unittest
 from uuid import uuid4
 
@@ -107,13 +109,41 @@ class PurchaseServiceTests(unittest.TestCase):
         self.assertFalse(purchase.blocks_fallback)
         self.assertEqual(self.provider.pay_calls, 0)
 
-    def test_price_above_approved_maximum_stops_before_pay(self):
-        limited = PurchaseRequest(**{**self.request.__dict__, "max_amount": Decimal("10.00")})
-        purchase, _ = self.service.enqueue(limited)
-        purchase = self.service.process_claimed(purchase, uuid4())
-        self.assertEqual(purchase.state, PurchaseState.FAILED)
-        self.assertIn("exceeds approved maximum", purchase.provider_message)
-        self.assertEqual(self.provider.pay_calls, 0)
+    def test_current_price_above_legacy_limit_is_used_for_purchase(self):
+        # Рост цены из реальной ошибки не должен останавливать покупку или менять сумму check.
+        self.provider.calculate_result = replace(self.provider.calculate_result, fixed_amount=Decimal("185.46"))
+        self.provider.check = Mock(return_value=self.provider.check_result)
+        self.provider.pay_results = [paid()]
+        request = replace(self.request, max_amount=Decimal("182.41"))
+        purchase, _ = self.service.enqueue(request)
+        lease = uuid4()
+        purchase = self.service.process_claimed(purchase, lease)
+        self.assertEqual(purchase.state, PurchaseState.CHECKED)
+        self.assertEqual(purchase.amount, Decimal("185.46"))
+        self.assertEqual(self.provider.check.call_args.args[0]["amount"], "185.46")
+        purchase = self.service.process_claimed(purchase, lease)
+        self.assertEqual(purchase.state, PurchaseState.SUCCEEDED)
+        self.assertEqual(self.provider.pay_calls, 1)
+
+    def test_purchase_without_legacy_limit_uses_current_price(self):
+        # Новые клиенты могут не передавать старую цену; нулевая цена поставщика всё ещё запрещена.
+        for amount, expected in (("10.50", PurchaseState.CHECKED), ("0", PurchaseState.FAILED)):
+            with self.subTest(amount=amount):
+                self.provider.calculate_result = replace(self.provider.calculate_result, fixed_amount=Decimal(amount))
+                request = replace(self.request, idempotency_key="without-limit:" + amount, max_amount=None)
+                purchase, _ = self.service.enqueue(request)
+                purchase = self.service.process_claimed(purchase, uuid4())
+                self.assertEqual(purchase.state, expected)
+                self.assertEqual(self.provider.pay_calls, 0)
+
+    def test_legacy_request_fingerprint_is_preserved(self):
+        # Старые повторы должны находить ту же покупку после обновления Hub.
+        from hashlib import sha256
+        import json
+        from hub.service import request_fingerprint
+        payload = {"provider_code": "interhub", "service_id": 100, "max_amount": "20.00", "account": "", "params": {"nominal": "10"}}
+        original = sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        self.assertEqual(request_fingerprint(self.request), original)
 
     def test_duplicate_supplier_code_requires_manual_reconciliation(self):
         self.repository.reject_duplicate_result = True
