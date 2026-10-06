@@ -27,6 +27,7 @@ from hub.repository import (
     ResultAccessConflict,
 )
 from hub.service import PurchaseService
+from hub.stock_snapshot import read_stock_snapshot
 
 
 class PurchaseIn(BaseModel):
@@ -282,6 +283,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"items": interhub.services()}
         except ProviderError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @application.get("/v1/providers/interhub/stock-snapshot")
+    def provider_stock_snapshot(_client_id: str = Depends(authenticated_client)) -> dict[str, Any]:
+        # Поставщик не опрашивается; сбой источника не подменяем нулевыми остатками.
+        try:
+            return read_stock_snapshot()
+        except Exception:
+            raise HTTPException(status_code=503, detail="Stock snapshot is unavailable") from None
 
     @application.get("/v1/providers/interhub/balance")
     def provider_balance(_client_id: str = Depends(authenticated_client)) -> dict[str, Any]:
