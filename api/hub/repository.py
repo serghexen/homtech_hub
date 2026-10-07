@@ -123,9 +123,14 @@ def _purchase(row: dict[str, Any]) -> Purchase:
         status_check_attempts=int(row.get("status_check_attempts") or 0),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
+        preflight_attempts=int(row.get("preflight_attempts") or 0),
         pay_started_at=row.get("pay_started_at"),
         completed_at=row.get("completed_at"),
         last_error=str(row.get("last_error") or ""),
+        kind=str(row.get("kind") or "voucher"),
+        requested_amount=row.get("requested_amount"),
+        workspace_id=row.get("workspace_id"),
+        connection_id=row.get("connection_id"),
     )
 
 
@@ -166,8 +171,9 @@ class PostgresPurchaseRepository:
                     """
                     INSERT INTO supplier_hub.purchases(
                         id, consumer_id, idempotency_key, request_id, request_fingerprint, provider_code,
-                        service_id, max_amount, account, request_params, provider_operation_id
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                        service_id, max_amount, account, request_params, provider_operation_id,
+                        kind, requested_amount, workspace_id, connection_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
                     ON CONFLICT (consumer_id, idempotency_key) DO NOTHING
                     RETURNING *
                     """,
@@ -183,6 +189,7 @@ class PostgresPurchaseRepository:
                         request.account,
                         json.dumps(request.params),
                         provider_operation_id,
+                        request.kind, request.requested_amount, request.workspace_id, request.connection_id,
                     ),
                 )
                 row = cursor.fetchone()
@@ -408,9 +415,9 @@ class PostgresPurchaseRepository:
                             """
                             UPDATE supplier_hub.purchases
                             SET state='succeeded', last_error='', completed_at=now(), updated_at=now(),
-                                result_ciphertext=pgp_sym_encrypt(
+                                result_ciphertext=CASE WHEN kind='steam_topup' THEN NULL ELSE pgp_sym_encrypt(
                                     %s, %s, 'cipher-algo=aes256, compress-algo=0'
-                                ),
+                                ) END,
                                 result_hash=%s, lease_token=NULL, lease_until=NULL
                             WHERE id=%s AND state='requires_attention'
                             RETURNING *
@@ -620,6 +627,28 @@ class PostgresPurchaseRepository:
                 row = cursor.fetchone()
             connection.commit()
         return str(next(iter(row.values()))) if row else None
+
+    def topup_allowed(self, request) -> bool:
+        with self._connect() as connection:
+            row = connection.execute("""
+                SELECT 1 FROM supplier_hub.topup_permissions
+                WHERE consumer_id=%s AND workspace_id=%s AND enabled
+                  AND %s <= max_amount
+                """, (request.consumer_id, request.workspace_id, request.requested_amount)).fetchone()
+        return bool(row)
+
+    def retry_topup_check(self, purchase_id, lease_token, message):
+        return self._transition(purchase_id, lease_token, allowed=(PurchaseState.CREATED,),
+            target=PurchaseState.CREATED, message=message,
+            assignments="preflight_attempts=preflight_attempts+1, last_error=%s, next_attempt_at=now()+interval '30 seconds'",
+            values=(message[:2000],))
+
+    def defer_topup(self, purchase_id, lease_token):
+        with self._connect() as connection:
+            connection.execute("""UPDATE supplier_hub.purchases
+                SET lease_token=NULL, lease_until=NULL, next_attempt_at=now()+interval '1 minute'
+                WHERE id=%s AND lease_token=%s AND kind='steam_topup'
+                AND state IN ('created','checked')""", (purchase_id, lease_token))
 
     def claim_due(self, lease_sec: int) -> tuple[Purchase, UUID] | None:
         lease_token = uuid4()

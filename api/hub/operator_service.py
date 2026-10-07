@@ -66,7 +66,11 @@ class OperatorService:
         clean_result = result_value.strip()
         if decision == OperatorDecision.CONFIRM_FAILED and clean_result:
             raise ValueError("confirm_failed must not contain a supplier result")
-        if decision == OperatorDecision.RECORD_SUCCESS and not clean_result:
+        existing = self.repository.get(purchase_id)
+        is_topup = existing is not None and existing.kind == "steam_topup"
+        if is_topup and clean_result:
+            raise ValueError("Steam topup has no voucher result")
+        if decision == OperatorDecision.RECORD_SUCCESS and not clean_result and not is_topup:
             raise ValueError("record_success requires a recovered supplier result")
         if len(clean_result) > 5000:
             raise ValueError("supplier result must contain at most 5000 characters")

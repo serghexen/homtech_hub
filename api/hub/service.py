@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from decimal import Decimal
 import json
 from typing import Mapping
 from uuid import UUID
@@ -22,6 +23,10 @@ def request_fingerprint(request: PurchaseRequest) -> str:
         "account": request.account,
         "params": request.params,
     }
+    # Старые ваучерные fingerprint остаются побайтно совместимыми.
+    if request.kind != "voucher":
+        payload.update(kind=request.kind, requested_amount=str(request.requested_amount),
+                       workspace_id=request.workspace_id, connection_id=request.connection_id)
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -49,6 +54,20 @@ class PurchaseService:
             raise ValueError("idempotency_key must contain 1 to 200 characters")
         if not valid_request_id(request.request_id):
             raise ValueError("request_id must contain 1 to 128 safe characters")
+        if request.kind not in {"voucher", "steam_topup"}:
+            raise ValueError("Unsupported purchase kind")
+        if request.kind == "steam_topup":
+            amount = request.requested_amount
+            if (request.provider_code != "interhub" or request.service_id != 9361
+                or not request.workspace_id or request.workspace_id <= 0 or request.connection_id is not None
+                or request.params or not request.account.strip() or len(request.account) > 100
+                or amount is None or not amount.is_finite() or amount < Decimal("16.99")
+                or amount != amount.quantize(Decimal("0.01"))):
+                raise ValueError("Invalid manual Steam topup")
+            if not self.settings.topups_enabled or not self.repository.topup_allowed(request):
+                raise ValueError("Steam topups are disabled for this workspace")
+        elif request.requested_amount is not None or request.workspace_id is not None or request.connection_id is not None:
+            raise ValueError("Topup fields require steam_topup kind")
         return self.repository.create_or_get(request, request_fingerprint(request))
 
     def process_claimed(self, purchase: Purchase, lease_token: UUID) -> Purchase:
@@ -58,6 +77,10 @@ class PurchaseService:
                 return self.repository.mark_preflight_failed(purchase.id, lease_token, "Provider is not configured")
             return self.repository.mark_requires_attention(purchase.id, lease_token, "Provider is not configured")
 
+        if purchase.kind == "steam_topup" and purchase.state in {PurchaseState.CREATED, PurchaseState.CHECKED}:
+            if not self.settings.topups_enabled or not self.repository.topup_allowed(purchase):
+                self.repository.defer_topup(purchase.id, lease_token)
+                return purchase
         if purchase.state == PurchaseState.CREATED:
             return self._preflight(purchase, lease_token, provider)
         if purchase.state == PurchaseState.CHECKED:
@@ -80,6 +103,15 @@ class PurchaseService:
     def _preflight(self, purchase: Purchase, lease_token: UUID, provider: SupplierProvider) -> Purchase:
         # Покупаем по актуальному расчёту поставщика, без сравнения с прежней ценой Seller.
         try:
+            # TOP_UP повторяет рабочий контракт CRM: явная сумма в check, без calculate номинала.
+            if purchase.kind == "steam_topup":
+                amount = purchase.requested_amount
+                checked = provider.check(self._provider_request(
+                    purchase, operation_id=purchase.provider_operation_id, amount=str(amount)))
+                if checked.public_payload.get("success") is not True or type(checked.public_payload.get("status")) is not int or checked.status != 0:
+                    return self.repository.mark_preflight_failed(
+                        purchase.id, lease_token, checked.message or "Steam account validation failed")
+                return self.repository.mark_checked(purchase.id, lease_token, amount, checked)
             calculated = provider.calculate(
                 self._provider_request(purchase, operation_id=f"{purchase.provider_operation_id}-calculate")
             )
@@ -105,6 +137,8 @@ class PurchaseService:
                 )
             return self.repository.mark_checked(purchase.id, lease_token, amount, checked)
         except ProviderError as exc:
+            if purchase.kind == "steam_topup" and purchase.preflight_attempts < 4:
+                return self.repository.retry_topup_check(purchase.id, lease_token, str(exc))
             return self.repository.mark_preflight_failed(purchase.id, lease_token, str(exc))
 
     def _pay(self, purchase: Purchase, lease_token: UUID, provider: SupplierProvider) -> Purchase:
@@ -137,6 +171,12 @@ class PurchaseService:
         *,
         status_check: bool,
     ) -> Purchase:
+        if purchase.kind == "steam_topup" and (
+            type(result.public_payload.get("success")) is not bool
+            or type(result.public_payload.get("status")) is not int
+        ):
+            return self.repository.mark_processing(purchase.id, lease_token,
+                "Unrecognized topup response; reconciliation required", status_check=status_check)
         state = {
             ProviderState.PROCESSING: PurchaseState.PROCESSING,
             ProviderState.SUCCEEDED: PurchaseState.SUCCEEDED,
@@ -145,7 +185,9 @@ class PurchaseService:
         result_value = ""
         digest = ""
         if state == PurchaseState.SUCCEEDED:
-            if not result.secret_value:
+            if purchase.kind == "steam_topup":
+                pass  # Успех пополнения подтверждается статусом поставщика, ваучера не будет.
+            elif not result.secret_value:
                 state = PurchaseState.PROCESSING
             else:
                 result_value = result.secret_value

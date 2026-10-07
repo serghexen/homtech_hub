@@ -39,6 +39,10 @@ class PurchaseIn(BaseModel):
     account: str = Field(default="", max_length=500)
     params: dict[str, Any] = Field(default_factory=dict)
     quantity: int = Field(default=1, ge=1, le=1)
+    kind: Literal["voucher", "steam_topup"] = "voucher"
+    requested_amount: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
+    workspace_id: int | None = Field(default=None, gt=0)
+    connection_id: int | None = Field(default=None, gt=0)
 
 
 class ProviderQuoteIn(BaseModel):
@@ -70,6 +74,9 @@ class PurchaseOut(BaseModel):
     result_available: bool
     blocks_fallback: bool
     status_check_attempts: int
+    kind: str = "voucher"
+    requested_amount: str | None = None
+    payment_started: bool = False
 
 
 class PurchaseResultOut(BaseModel):
@@ -196,6 +203,9 @@ def purchase_out(purchase: Purchase) -> PurchaseOut:
         result_available=purchase.result_available,
         blocks_fallback=purchase.blocks_fallback,
         status_check_attempts=purchase.status_check_attempts,
+        kind=purchase.kind,
+        requested_amount=str(purchase.requested_amount) if purchase.requested_amount is not None else None,
+        payment_started=purchase.pay_started_at is not None,
     )
 
 
@@ -344,6 +354,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     max_amount=payload.max_amount,
                     account=payload.account,
                     params=payload.params,
+                    kind=payload.kind, requested_amount=payload.requested_amount,
+                    workspace_id=payload.workspace_id, connection_id=payload.connection_id,
                 )
             )
         except IdempotencyConflict as exc:

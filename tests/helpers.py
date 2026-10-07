@@ -83,10 +83,23 @@ class MemoryRepository:
             request_fingerprint=fingerprint,
             provider_operation_id=f"hub-test-{purchase_id.hex}",
             state=PurchaseState.CREATED,
+            kind=request.kind, requested_amount=request.requested_amount,
+            workspace_id=request.workspace_id, connection_id=request.connection_id,
         )
         self.items[purchase_id] = purchase
         self.by_key[key] = purchase_id
         return purchase, True
+
+    def topup_allowed(self, request):
+        return True
+
+    def retry_topup_check(self, purchase_id, lease_token, message):
+        item = self.items[purchase_id]
+        item.preflight_attempts += 1
+        return item
+
+    def defer_topup(self, purchase_id, lease_token):
+        pass
 
     def get(self, purchase_id, consumer_id=None):
         item = self.items.get(purchase_id)

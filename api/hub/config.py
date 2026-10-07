@@ -45,6 +45,7 @@ class Settings:
     interhub_check_status_path: str
     interhub_deposit_path: str
     interhub_pay_enabled: bool
+    topups_enabled: bool = False
 
     @property
     def live_pay_allowed(self) -> bool:
@@ -108,4 +109,5 @@ def load_settings() -> Settings:
         interhub_check_status_path=os.getenv("INTERHUB_CHECK_STATUS_PATH", "/api/agent/payment/check_status").strip(),
         interhub_deposit_path=os.getenv("INTERHUB_DEPOSIT_PATH", "/api/agent/deposit").strip(),
         interhub_pay_enabled=env_bool("INTERHUB_PAY_ENABLED"),
+        topups_enabled=env_bool("INTERHUB_TOPUPS_ENABLED"),
     )

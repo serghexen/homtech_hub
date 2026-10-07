@@ -46,6 +46,10 @@ class PurchaseRequest:
     max_amount: Decimal | None = None
     account: str = ""
     params: dict[str, Any] = field(default_factory=dict)
+    kind: str = "voucher"
+    requested_amount: Decimal | None = None
+    workspace_id: int | None = None
+    connection_id: int | None = None
 
 
 @dataclass
@@ -71,9 +75,14 @@ class Purchase:
     status_check_attempts: int = 0
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    preflight_attempts: int = 0
     pay_started_at: datetime | None = None
     completed_at: datetime | None = None
     last_error: str = ""
+    kind: str = "voucher"
+    requested_amount: Decimal | None = None
+    workspace_id: int | None = None
+    connection_id: int | None = None
 
     @property
     def result_available(self) -> bool:
